@@ -108,7 +108,7 @@ def visualize_network(G):
 # Main script
 if __name__ == "__main__":
     # Set parameters
-    num_nodes = 1000  # Number of nodes
+    num_nodes = 100  # Number of nodes
     m = 2  # BA model parameter
     mean_capacity = 20000000  # Mean channel capacity: 20 million satoshis
     median_capacity = 5000000  # Median channel capacity: 5 million satoshis
@@ -116,6 +116,7 @@ if __name__ == "__main__":
 
     # Generate network
     G = generate_lightning_network(num_nodes, m, mean_capacity, median_capacity)
+    nx.write_edgelist(G, "lightning_network.txt", data=True)
 
     # Output statistics
     print(f"Number of nodes: {G.number_of_nodes()}")
@@ -125,19 +126,24 @@ if __name__ == "__main__":
     print(f"Median channel capacity: {np.median(capacities):.2f} satoshis")
 
     # Load payment amounts from creditcard.csv
-    num_payments = 1000  # Simulate 1000 payments
+    num_payments = 500  # Simulate 1000 payments
     payment_amounts = load_payment_amounts(file_path, num_payments)
 
-    # Simulate multiple payments
-    sender = 0
-    receiver = 99
+    successful_payments = 0  # Counter for successful payments
+    total_payments = len(payment_amounts)  # Total number of payments
+
     for i, amount in enumerate(payment_amounts):
         sender, receiver = random_sender_receiver(G)
         success, path = simulate_payment(G, sender, receiver, amount)
         if success:
+            successful_payments += 1
             print(f"Payment {i+1} successful! Amount: {amount} satoshis, Path: {path}")
         else:
             print(f"Payment {i+1} failed! Amount: {amount} satoshis")
+
+    # Calculate and print success rate
+    success_rate = (successful_payments / total_payments) * 100
+    print(f"Payment Success Rate: {success_rate:.2f}%")
 
     # Visualize the network (optional)
     visualize_network(G)
