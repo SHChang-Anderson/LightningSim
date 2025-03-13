@@ -1,5 +1,3 @@
-### DESCRIPTION
-
 # LightningSim
 **LightningSim** is a tool designed to simulate Lightning Network payments, with an emphasis on channel capacity management. It creates a scale-free network topology, allocates channel capacities, and simulates payment processes to help users explore the mechanics of the Lightning Network.
 
