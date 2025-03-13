@@ -3,9 +3,60 @@ import numpy as np
 import matplotlib.pyplot as plt
 import pandas as pd
 import random
+import os
+import ast  # For safely parsing dictionary strings
+import re  # For regular expressions
 
 # Set random seed for reproducibility
 np.random.seed(42)
+
+import os
+
+def get_paths_from_routing_table(filename, source, destination):
+    """
+    Extracts all paths from the given source to destination from the routing table file.
+
+    Parameters:
+    - filename (str): Path to the routing table file.
+    - source (int): Source node.
+    - destination (int): Destination node.
+
+    Returns:
+    - List of tuples (path, flow), where:
+      - path (list): List of nodes in the path.
+      - flow (int): Maximum flow for that path.
+    """
+    paths = []
+    if not os.path.exists(filename):
+        print(f"Routing table file {filename} not found.")
+        return paths
+
+    with open(filename, "r") as file:
+        is_target_section = False  # Track whether we're in the correct section
+        for line in file:
+            line = line.strip()
+            
+            # Identify section header
+            if line.startswith(f"Paths from node{source} to node{destination}:"):
+                is_target_section = True
+                continue  # Move to the next line
+
+            # If a new section starts, stop processing
+            if is_target_section and line.startswith("Paths from node"):
+                break
+
+            # Process paths within the relevant section
+            if is_target_section and "Path:" in line:
+                parts = line.split(", ")
+                path_str = parts[0].split(":")[1].strip()  # Extract path
+                flow_str = parts[1].split(":")[1].strip()  # Extract flow
+                
+                # Convert path to list of integers
+                path = [int(node.replace("node", "")) for node in path_str.split()]
+                flow = int(flow_str)
+                paths.append((path, flow))
+
+    return paths
 
 # Function to randomly select a sender and receiver
 def random_sender_receiver(G):
@@ -54,6 +105,13 @@ def generate_lightning_network(num_nodes, m, mean_capacity, median_capacity):
 
 # Function to simulate a payment
 def simulate_payment(G, sender, receiver, amount):
+    print(sender)
+    print(receiver)
+    candidate_paths = get_paths_from_routing_table("routing_table/node" + str(sender), sender, receiver)
+    if not candidate_paths:
+        return False, []
+    candidate_paths.sort(key=lambda x: x[1], reverse=True)  # Sort by flow (descending)
+    print("Path with the highest flow:", candidate_paths[0][0], candidate_paths[0][1]) # Print the path with the highest flow
     """
     Simulate a payment in the Lightning Network.
     Parameters:
@@ -66,7 +124,8 @@ def simulate_payment(G, sender, receiver, amount):
     - path: Payment path (if successful)
     """
     try:
-        path = nx.shortest_path(G, sender, receiver)
+        # path = nx.shortest_path(G, sender, receiver)
+        path = candidate_paths[0][0]
         for i in range(len(path) - 1):
             u, v = path[i], path[i + 1]
             if G[u][v]['capacity'] < amount:
@@ -110,14 +169,31 @@ if __name__ == "__main__":
     # Set parameters
     num_nodes = 100  # Number of nodes
     m = 2  # BA model parameter
-    mean_capacity = 20000000  # Mean channel capacity: 20 million satoshis
-    median_capacity = 5000000  # Median channel capacity: 5 million satoshis
+    mean_capacity = 200000000  # Mean channel capacity: 20 million satoshis
+    median_capacity = 50000000  # Median channel capacity: 5 million satoshis
     file_path = "creditcard.csv"  # CSV file path
 
     # Generate network
-    G = generate_lightning_network(num_nodes, m, mean_capacity, median_capacity)
-    nx.write_edgelist(G, "lightning_network.txt", data=True)
-
+    # G = generate_lightning_network(num_nodes, m, mean_capacity, median_capacity)
+    
+    G = nx.Graph()
+    with open("lightning_network.txt", "r") as f:
+        for line in f:
+            parts = line.strip().split(maxsplit=2)
+            if len(parts) != 3:
+                continue
+            u, v, attr_str = parts
+            u, v = int(u), int(v)
+            match = re.search(r"np\.int64\((\d+)\)", attr_str)
+            if match:
+                capacity = int(match.group(1))
+                attrs = {'capacity': capacity}
+                G.add_edge(u, v, **attrs)
+            else:
+                print(f"Skipping malformed line: {line.strip()}")
+    
+    # nx.write_edgelist(G, "lightning_network.txt", data=True)
+    
     # Output statistics
     print(f"Number of nodes: {G.number_of_nodes()}")
     print(f"Number of channels: {G.number_of_edges()}")
@@ -126,7 +202,7 @@ if __name__ == "__main__":
     print(f"Median channel capacity: {np.median(capacities):.2f} satoshis")
 
     # Load payment amounts from creditcard.csv
-    num_payments = 500  # Simulate 1000 payments
+    num_payments = 1000  # Simulate 1000 payments
     payment_amounts = load_payment_amounts(file_path, num_payments)
 
     successful_payments = 0  # Counter for successful payments
