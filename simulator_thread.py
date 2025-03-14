@@ -9,8 +9,25 @@ import re
 import threading
 import time
 import queue
-from collections import deque
+import sys
+
 np.random.seed(42)
+
+def clear_log_table():
+    log_dir = "./log_table"
+    if os.path.exists(log_dir):
+        # 刪除資料夾中的所有檔案和子目錄
+        for filename in os.listdir(log_dir):
+            file_path = os.path.join(log_dir, filename)
+            try:
+                if os.path.isfile(file_path) or os.path.islink(file_path):
+                    os.unlink(file_path)  # 刪除檔案或符號連結
+                elif os.path.isdir(file_path):
+                    shutil.rmtree(file_path)  # 刪除子目錄
+            except Exception as e:
+                print(f"Failed to delete {file_path}. Reason: {e}")
+    else:
+        print(f"{log_dir} does not exist.")
 
 def get_paths_from_routing_table(filename, source, destination):
     """
@@ -85,6 +102,17 @@ class PaymentTask:
         status = "Success" if self.success else "Failed"
         return f"Payment {self.payment_id}: {self.amount} satoshis from {self.sender} to {self.receiver}, Status: {status}, Arrival: {self.arrival_time:.2f}s, Completion: {self.completion_time:.2f}s, Processing: {self.processing_time:.2f}s, Path: {self.path}"
 
+    # For compatibility with PriorityQueue
+    def __lt__(self, other):
+        return self.arrival_time < other.arrival_time
+    
+# Probing task class
+class ProbeTask:
+    def __init__(self, path, arrival_time):
+        self.path = path
+        self.amount = sys.maxsize  # Amount to probe
+        self.arrival_time = arrival_time  # For compatibility with PaymentTask
+    
 # For compatibility with PriorityQueue
     def __lt__(self, other):
         return self.arrival_time < other.arrival_time
@@ -124,6 +152,79 @@ class ChannelLockManager:
         for channel in channels:
             self.release_channel_lock(channel)
 
+def record_probe_results(node_id, probe_tasks):
+    """
+    Record the results of probing tasks to a log file.
+
+    Parameters:
+    - node_id (str): The ID of the source node.
+    - probe_tasks (list): A list of ProbeTask objects containing probing results.
+    """
+    log_dir = "./log_table"
+    os.makedirs(log_dir, exist_ok=True)  # Ensure the log directory exists
+    log_file = os.path.join(log_dir, f"node_{node_id}.log")
+
+    # Group probe tasks by destination node
+    results_by_destination = {}
+    
+    destination = probe_tasks.path[-1]  # The last node in the path is the destination
+    if destination not in results_by_destination:
+        results_by_destination[destination] = []
+    results_by_destination[destination].append({
+        "path": probe_tasks.path,
+        "flow": probe_tasks.amount,  # The probed flow is the minimum capacity along the path
+        "fee": len(probe_tasks.path) - 1  # Fee is based on the number of hops
+    })
+
+    # Write results to the log file
+    with open(log_file, "a") as f:
+        for dest, paths in results_by_destination.items():
+            for path_info in paths:
+                path_str = " ".join(f"node{n}" for n in path_info["path"])
+                flow = path_info["flow"]
+                fee = path_info["fee"]
+                f.write(f"  Path: {path_str}, Flow: {flow}, Fee: {fee}\n")
+
+def probing_worker(G, task_queue, stop_event, simulation_start_time):
+    """
+    Worker function for probing the network.
+    """
+    while not stop_event.is_set():
+        try:
+            # Get the next probing task from the queue
+            probing_task = task_queue.get(block=True, timeout=1)
+
+                        # Calculate the current simulation time
+            current_time = time.time() - simulation_start_time
+            
+            # Check if it's time to process this payment
+            if current_time < probing_task.arrival_time:
+                # If not time yet, put it back in the queue and wait
+                task_queue.put(probing_task)
+                task_queue.task_done()  # Important: mark this task as done before re-adding
+                # time.sleep(0.001)  # Short sleep to prevent CPU spinning
+                continue
+
+            try:
+                
+                # Update channel capacities
+                for i in range(len(probing_task.path) - 1):
+                    u, v = probing_task.path[i], probing_task.path[i + 1]
+                    probing_task.amount = min(probing_task.amount, G[u][v]['capacity'])
+                
+            except Exception as e:
+                probing_task.message = f"Error probing path: {str(e)}"
+            
+            # Record the probing results to log table
+            record_probe_results(probing_task.path[0][0], probing_task)
+
+            # Mark the task as done
+            task_queue.task_done()
+                   
+        except queue.Empty:
+            # Continue if the queue is empty
+            pass
+
 def payment_worker(G, task_queue, result_queue, lock_manager, stop_event, simulation_start_time):
     """
     Worker function for processing individual payments.
@@ -141,7 +242,7 @@ def payment_worker(G, task_queue, result_queue, lock_manager, stop_event, simula
                 # If not time yet, put it back in the queue and wait
                 task_queue.put(payment_task)
                 task_queue.task_done()  # Important: mark this task as done before re-adding
-                time.sleep(0.001)  # Short sleep to prevent CPU spinning
+                # time.sleep(0.001)  # Short sleep to prevent CPU spinning
                 continue
                 
             # Start processing the payment
@@ -187,13 +288,13 @@ def payment_worker(G, task_queue, result_queue, lock_manager, stop_event, simula
             # Mark the task as done
             task_queue.task_done()
                 
-        except:
+        except queue.Empty:
             # Continue if the queue is empty
             pass
 
 
 # Simulate threaded payments with Poisson arrival
-def simulate_threaded_payments_poisson(G, payment_tasks, num_threads=10):
+def simulate_threaded_payments_poisson(G, payment_tasks, probing_task, num_threads=10):
     """
     Simulate parallel payments in the Lightning Network using multiple threads.
     Payments arrive according to a Poisson process.
@@ -202,6 +303,9 @@ def simulate_threaded_payments_poisson(G, payment_tasks, num_threads=10):
     task_queue = queue.PriorityQueue()
     result_queue = queue.Queue()
     
+    # Create a probing task queue
+    probing_task_queue = queue.PriorityQueue()
+
     # Create a lock manager
     lock_manager = ChannelLockManager()
     
@@ -213,7 +317,7 @@ def simulate_threaded_payments_poisson(G, payment_tasks, num_threads=10):
     
     # Create and start worker threads
     threads = []
-    for _ in range(num_threads):
+    for _ in range(5):
         thread = threading.Thread(
             target=payment_worker,
             args=(G, task_queue, result_queue, lock_manager, stop_event, simulation_start_time)
@@ -225,6 +329,21 @@ def simulate_threaded_payments_poisson(G, payment_tasks, num_threads=10):
     # Add payment tasks to the task queue
     for task in payment_tasks:
         task_queue.put(task)
+    
+    # Create and start worker threads
+    threads1 = []
+    for _ in range(20):
+        thread = threading.Thread(
+            target=probing_worker,
+            args=(G, probing_task_queue, stop_event, simulation_start_time)
+        )
+        thread.daemon = True
+        thread.start()
+        threads1.append(thread)
+    
+    # Add payment tasks to the task queue
+    for task in probing_task:
+        probing_task_queue.put(task)
 
     # Wait for all tasks to be processed
     task_queue.join()
@@ -293,7 +412,8 @@ def prepare_payment_tasks_poisson(G, payment_amounts, rate):
     - List of PaymentTask objects
     """
     tasks = []
-    
+    probing_tasks = []
+
     # Generate arrival times
     arrival_times = generate_poisson_arrival_times(len(payment_amounts), rate)
     
@@ -316,14 +436,22 @@ def prepare_payment_tasks_poisson(G, payment_amounts, rate):
             # Create a payment task with arrival time
             task = PaymentTask(i+1, sender, receiver, amount, path, arrival_time)
             tasks.append(task)
-                
+
+            ct = 0
+            for path1 in candidate_paths:
+                ct += 1
+                if (ct > 5):
+                    break
+                probing_task = ProbeTask(path1, arrival_time)
+                probing_tasks.append(probing_task)
+    
         except nx.NetworkXNoPath:  
             print(f"Cannot find a path from {sender} to {receiver}, skipping payment {i+1}")  
         except Exception as e:  
             print(f"Error preparing payment {i+1}: {str(e)}")
 
 
-    return tasks
+    return tasks, probing_tasks
 
 # Load payment amounts
 def load_payment_amounts(file_path, num_payments):
@@ -387,6 +515,8 @@ def plot_payment_statistics(results):
 if __name__ == "__main__":
     file_path = "creditcard.csv"  # CSV file path
 
+    clear_log_table() # Clear the log table
+
     # Load the Lightning Network graph
     G = nx.Graph()
     with open("lightning_network.txt", "r") as f:
@@ -412,19 +542,19 @@ if __name__ == "__main__":
     print(f"Median channel capacity: {np.median(capacities):.2f} satoshis")
 
     # Load payment amounts from creditcard.csv
-    num_payments = 100  # Simulate 1000 payments
+    num_payments = 1000  # Simulate 1000 payments
     payment_amounts = load_payment_amounts(file_path, num_payments)
 
     # Prepare payment tasks
-    payment_tasks = prepare_payment_tasks_poisson(G, payment_amounts, 3000)
+    payment_tasks, probing_task = prepare_payment_tasks_poisson(G, payment_amounts, 3000)
     
-    print(f"Prepared {len(payment_tasks)} payment tasks")
+    print(f"Prepared {len(payment_tasks)} payment tasks and {len(probing_task)} probing tasks.")
     
     # Visualize the network
     start_time = time.time()
     
     # Simulate threaded payments
-    successful_payments, total_payments, results = simulate_threaded_payments_poisson(G, payment_tasks, num_threads=20)
+    successful_payments, total_payments, results = simulate_threaded_payments_poisson(G, payment_tasks, probing_task, num_threads=20)
     
     # Calculate and print the success rate
     end_time = time.time()
