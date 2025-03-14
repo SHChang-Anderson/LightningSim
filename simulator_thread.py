@@ -16,14 +16,14 @@ np.random.seed(42)
 def clear_log_table():
     log_dir = "./log_table"
     if os.path.exists(log_dir):
-        # 刪除資料夾中的所有檔案和子目錄
+        # Delete all files and subdirectories in the directory
         for filename in os.listdir(log_dir):
             file_path = os.path.join(log_dir, filename)
             try:
                 if os.path.isfile(file_path) or os.path.islink(file_path):
-                    os.unlink(file_path)  # 刪除檔案或符號連結
+                    os.unlink(file_path)  # Delete file or symbolic link
                 elif os.path.isdir(file_path):
-                    shutil.rmtree(file_path)  # 刪除子目錄
+                    shutil.rmtree(file_path)  # Delete subdirectory
             except Exception as e:
                 print(f"Failed to delete {file_path}. Reason: {e}")
     else:
