@@ -8,9 +8,8 @@ import ast
 import re
 import threading
 import time
-from queue import Queue
+import queue
 from collections import deque
-
 np.random.seed(42)
 
 def get_paths_from_routing_table(filename, source, destination):
@@ -70,18 +69,25 @@ def random_sender_receiver(G):
 
 #  Payment task class
 class PaymentTask:
-    def __init__(self, payment_id, sender, receiver, amount, path):
+    def __init__(self, payment_id, sender, receiver, amount, path, arrival_time):
         self.payment_id = payment_id
         self.sender = sender
         self.receiver = receiver
         self.amount = amount
         self.path = path
+        self.arrival_time = arrival_time  # Time when the payment arrives
+        self.processing_time = 0  # Time spent processing the payment
+        self.completion_time = 0  # Time when the payment completes
         self.success = False
         self.message = ""
         
     def __str__(self):
         status = "Success" if self.success else "Failed"
-        return f"Payment {self.payment_id}: {self.amount} satoshis from {self.sender} to {self.receiver}, Status: {status}, Path: {self.path}"
+        return f"Payment {self.payment_id}: {self.amount} satoshis from {self.sender} to {self.receiver}, Status: {status}, Arrival: {self.arrival_time:.2f}s, Completion: {self.completion_time:.2f}s, Processing: {self.processing_time:.2f}s, Path: {self.path}"
+
+# For compatibility with PriorityQueue
+    def __lt__(self, other):
+        return self.arrival_time < other.arrival_time
 
 # Check if the path has enough capacity
 class ChannelLockManager:
@@ -118,8 +124,7 @@ class ChannelLockManager:
         for channel in channels:
             self.release_channel_lock(channel)
 
-# Payment worker
-def payment_worker(G, task_queue, result_queue, lock_manager, stop_event):
+def payment_worker(G, task_queue, result_queue, lock_manager, stop_event, simulation_start_time):
     """
     Worker function for processing individual payments.
     """
@@ -127,6 +132,20 @@ def payment_worker(G, task_queue, result_queue, lock_manager, stop_event):
         try:
             # Get the next payment task from the queue
             payment_task = task_queue.get(block=True, timeout=1)
+            
+            # Calculate the current simulation time
+            current_time = time.time() - simulation_start_time
+            
+            # Check if it's time to process this payment
+            if current_time < payment_task.arrival_time:
+                # If not time yet, put it back in the queue and wait
+                task_queue.put(payment_task)
+                task_queue.task_done()  # Important: mark this task as done before re-adding
+                time.sleep(0.001)  # Short sleep to prevent CPU spinning
+                continue
+                
+            # Start processing the payment
+            processing_start_time = time.time()
             
             try:
                 # Acquire locks for all channels on the path
@@ -157,25 +176,31 @@ def payment_worker(G, task_queue, result_queue, lock_manager, stop_event):
                 
             except Exception as e:
                 payment_task.message = f"Error processing payment: {str(e)}"
-                
+            
+            # Calculate processing time and completion time
+            payment_task.processing_time = time.time() - processing_start_time
+            payment_task.completion_time = time.time() - simulation_start_time
+            
             # Add the payment task to the result queue
             result_queue.put(payment_task)
-            
+
             # Mark the task as done
             task_queue.task_done()
                 
-        except task_queue.Empty:
+        except:
             # Continue if the queue is empty
             pass
 
-# Simulate threaded payments
-def simulate_threaded_payments(G, payment_tasks, num_threads=10):
+
+# Simulate threaded payments with Poisson arrival
+def simulate_threaded_payments_poisson(G, payment_tasks, num_threads=10):
     """
     Simulate parallel payments in the Lightning Network using multiple threads.
+    Payments arrive according to a Poisson process.
     """
     # Create task and result queues
-    task_queue = Queue()
-    result_queue = Queue()
+    task_queue = queue.PriorityQueue()
+    result_queue = queue.Queue()
     
     # Create a lock manager
     lock_manager = ChannelLockManager()
@@ -183,12 +208,15 @@ def simulate_threaded_payments(G, payment_tasks, num_threads=10):
     # Create a stop event
     stop_event = threading.Event()
     
+    # Record the simulation start time
+    simulation_start_time = time.time()
+    
     # Create and start worker threads
     threads = []
     for _ in range(num_threads):
         thread = threading.Thread(
             target=payment_worker,
-            args=(G, task_queue, result_queue, lock_manager, stop_event)
+            args=(G, task_queue, result_queue, lock_manager, stop_event, simulation_start_time)
         )
         thread.daemon = True
         thread.start()
@@ -197,10 +225,10 @@ def simulate_threaded_payments(G, payment_tasks, num_threads=10):
     # Add payment tasks to the task queue
     for task in payment_tasks:
         task_queue.put(task)
-    
+
     # Wait for all tasks to be processed
     task_queue.join()
-    
+
     # Set the stop event
     stop_event.set()
     
@@ -217,21 +245,59 @@ def simulate_threaded_payments(G, payment_tasks, num_threads=10):
     successful_payments = sum(1 for task in results if task.success)
     total_payments = len(results)
     
+    # Calculate statistics
+    if results:
+        avg_processing_time = sum(task.processing_time for task in results) / len(results)
+        avg_completion_time = sum(task.completion_time for task in results) / len(results)
+        print(f"Average processing time: {avg_processing_time:.2f} seconds")
+        print(f"Average completion time: {avg_completion_time:.2f} seconds")
+    
     # Print payment results
     print(f"\nPayment results:")
     for task in sorted(results, key=lambda x: x.payment_id):
         print(task)
     
-    return successful_payments, total_payments
+    return successful_payments, total_payments, results
 
-# Prepare payment tasks
-def prepare_payment_tasks(G, payment_amounts):
+# Generate payment arrival times using Poisson process
+def generate_poisson_arrival_times(num_payments, rate):
     """
-    Prepare payment tasks for the simulation.
+    Generate arrival times for payments based on a Poisson process.
+    
+    Parameters:
+    - num_payments (int): Number of payments to generate
+    - rate (float): Average number of payments per second
+    
+    Returns:
+    - List of arrival times
+    """
+    # Generate inter-arrival times (exponential distribution)
+    inter_arrival_times = np.random.exponential(1/rate, num_payments)
+    
+    # Convert to absolute arrival times
+    arrival_times = np.cumsum(inter_arrival_times)
+    
+    return arrival_times
+
+# Prepare payment tasks with Poisson arrival times
+def prepare_payment_tasks_poisson(G, payment_amounts, rate):
+    """
+    Prepare payment tasks for the simulation with Poisson arrival times.
+    
+    Parameters:
+    - G (nx.Graph): The network graph
+    - payment_amounts (list): List of payment amounts
+    - rate (float): Average number of payments per second
+    
+    Returns:
+    - List of PaymentTask objects
     """
     tasks = []
     
-    for i, amount in enumerate(payment_amounts):
+    # Generate arrival times
+    arrival_times = generate_poisson_arrival_times(len(payment_amounts), rate)
+    
+    for i, (amount, arrival_time) in enumerate(zip(payment_amounts, arrival_times)):
         sender, receiver = random_sender_receiver(G)
         
         # Try to find a path in the routing table
@@ -247,8 +313,8 @@ def prepare_payment_tasks(G, payment_amounts):
                 # If no path is found in the routing table, use the shortest path
                 path = nx.shortest_path(G, sender, receiver)
                 
-            # Create a payment task
-            task = PaymentTask(i+1, sender, receiver, amount, path)
+            # Create a payment task with arrival time
+            task = PaymentTask(i+1, sender, receiver, amount, path, arrival_time)
             tasks.append(task)
                 
         except nx.NetworkXNoPath:  
@@ -256,7 +322,7 @@ def prepare_payment_tasks(G, payment_amounts):
         except Exception as e:  
             print(f"Error preparing payment {i+1}: {str(e)}")
 
-    
+
     return tasks
 
 # Load payment amounts
@@ -276,7 +342,46 @@ def visualize_network(G):
     """
     pos = nx.spring_layout(G)
     capacities = [G[u][v]['capacity'] for u, v in G.edges()]
-    nx.draw(G, pos, with_labels=True, node_size=500, node_color='skyblue', edge_color=capacities, edge_cmap=plt.cm.Blues)
+    nx.draw(G, pos, with_labels=True, node_size=500, edge_color=capacities)
+    plt.show()
+
+# Plot payment arrival and completion times
+def plot_payment_statistics(results):
+    """
+    Plot statistics about payment arrival and completion times.
+    """
+    arrival_times = [task.arrival_time for task in results]
+    completion_times = [task.completion_time for task in results]
+    processing_times = [task.processing_time for task in results]
+    
+    success_status = [task.success for task in results]
+    
+    plt.figure(figsize=(12, 8))
+    
+    # Plot arrival and completion times
+    plt.subplot(2, 1, 1)
+    plt.scatter(arrival_times, range(len(arrival_times)), alpha=0.5, label='Arrival Time')
+    plt.scatter(completion_times, range(len(completion_times)), alpha=0.5, label='Completion Time')
+    plt.xlabel('Time (seconds)')
+    plt.ylabel('Payment Index')
+    plt.title('Payment Arrival and Completion Times')
+    plt.legend()
+    
+    # Plot processing times (success vs failure)
+    plt.subplot(2, 1, 2)
+    success_processing = [t for t, s in zip(processing_times, success_status) if s]
+    failure_processing = [t for t, s in zip(processing_times, success_status) if not s]
+    
+    plt.hist([success_processing, failure_processing], 
+             bins=20, 
+             label=['Successful', 'Failed'],
+             alpha=0.7)
+    plt.xlabel('Processing Time (seconds)')
+    plt.ylabel('Count')
+    plt.title('Processing Time Distribution')
+    plt.legend()
+    
+    plt.tight_layout()
     plt.show()
 
 if __name__ == "__main__":
@@ -307,11 +412,11 @@ if __name__ == "__main__":
     print(f"Median channel capacity: {np.median(capacities):.2f} satoshis")
 
     # Load payment amounts from creditcard.csv
-    num_payments = 1000  # Simulate 1000 payments
+    num_payments = 100  # Simulate 1000 payments
     payment_amounts = load_payment_amounts(file_path, num_payments)
 
     # Prepare payment tasks
-    payment_tasks = prepare_payment_tasks(G, payment_amounts)
+    payment_tasks = prepare_payment_tasks_poisson(G, payment_amounts, 3000)
     
     print(f"Prepared {len(payment_tasks)} payment tasks")
     
@@ -319,7 +424,7 @@ if __name__ == "__main__":
     start_time = time.time()
     
     # Simulate threaded payments
-    successful_payments, total_payments = simulate_threaded_payments(G, payment_tasks, num_threads=10)
+    successful_payments, total_payments, results = simulate_threaded_payments_poisson(G, payment_tasks, num_threads=20)
     
     # Calculate and print the success rate
     end_time = time.time()
@@ -329,3 +434,5 @@ if __name__ == "__main__":
     print(f"\nSuccess Rate: {success_rate:.2f}%")
     print(f"Successful Payments: {successful_payments}/{total_payments}")
     print(f"Execution Time: {end_time - start_time:.2f} seconds")
+    visualize_network(G)
+    plot_payment_statistics(results)
