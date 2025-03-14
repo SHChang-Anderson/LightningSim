@@ -89,8 +89,8 @@ def simulate_payment(G, sender, receiver, amount):
     - path: Payment path (if successful)
     """
     try:
-        # path = nx.shortest_path(G, sender, receiver)
-        path = candidate_paths[0][0]
+        path = nx.shortest_path(G, sender, receiver)
+        # path = candidate_paths[0][0]
         for i in range(len(path) - 1):
             u, v = path[i], path[i + 1]
             if G[u][v]['capacity'] < amount:
@@ -98,6 +98,7 @@ def simulate_payment(G, sender, receiver, amount):
         for i in range(len(path) - 1):
             u, v = path[i], path[i + 1]
             G[u][v]['capacity'] -= amount
+            G[v][u]['capacity'] += amount 
         return True, path
     except nx.NetworkXNoPath:
         return False, []
