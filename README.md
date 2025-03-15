@@ -23,4 +23,5 @@
 ## Installation
 Install the required libraries using:
 ```bash
-pip install networkx numpy matplotlib pandas
+pip install -r requirements.txt
+```
