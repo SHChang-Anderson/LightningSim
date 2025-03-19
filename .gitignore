@@ -1,5 +1,5 @@
 venv/
 creditcard.csv
-routing_table/
+routing_table/*
 lightning_network.txt
-log_table/
+log_table/*
