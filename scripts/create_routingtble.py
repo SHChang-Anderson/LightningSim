@@ -67,7 +67,7 @@ def candidate_path_computation(graph, capacity, base_fee, vs):
     return candidate_paths
 
 # 清除舊的 routing table
-directory_to_delete = "./routing_table"
+directory_to_delete = "../routing_table"
 delete_directory(directory_to_delete)
 
 # 初始化 graph, capacity, base_fee
@@ -112,7 +112,7 @@ with open("lightning_network.txt", "r") as file:
         base_fee[(node2, node1)] = fee
 
 # 建立 routing table
-folder_name = "./routing_table"
+folder_name = "../routing_table"
 os.makedirs(folder_name, exist_ok=True)
 
 for i in graph:

@@ -19,7 +19,7 @@ G = nx.DiGraph()
 probing_task_queue = queue.PriorityQueue()
 
 def clear_log_table():
-    log_dir = "./log_table"
+    log_dir = "../log_table"
     if os.path.exists(log_dir):
         # Delete all files and subdirectories in the directory
         for filename in os.listdir(log_dir):
@@ -209,7 +209,7 @@ def record_probe_results(node_id, probe_tasks, simulation_start_time):
     - probe_tasks (list): A list of ProbeTask objects containing probing results.
     - simulation_start_time (float): The simulation start time in seconds.
     """
-    log_dir = "./log_table"
+    log_dir = "../log_table"
     os.makedirs(log_dir, exist_ok=True)  # Ensure the log directory exists
     log_file = os.path.join(log_dir, f"node_{node_id}.log")
 
@@ -289,7 +289,7 @@ def payment_worker(task_queue, result_queue, lock_manager, stop_event, simulatio
             processing_start_time = time.time()
             
             try: 
-                candidate_paths = get_paths_from_routing_table(f"routing_table/node{payment_task.sender}", payment_task.sender, payment_task.receiver)
+                candidate_paths = get_paths_from_routing_table(f"../routing_table/node{payment_task.sender}", payment_task.sender, payment_task.receiver)
                 for path1 in candidate_paths:
                     probing_task = ProbeTask(path1[0], time.time() - simulation_start_time)
                     probing_task_queue.put(probing_task)
@@ -298,7 +298,7 @@ def payment_worker(task_queue, result_queue, lock_manager, stop_event, simulatio
                 probing_task_queue.join()
 
             
-                log_paths = read_paths_from_log(f"log_table/node_{payment_task.sender}.log")
+                log_paths = read_paths_from_log(f"../log_table/node_{payment_task.sender}.log")
 
                 # print( payment_task.path, log_paths[0]["path"])
                 for log_path in log_paths:
@@ -479,7 +479,7 @@ def prepare_payment_tasks_poisson(payment_amounts, rate):
         
         # Try to find a path in the routing table
         try:
-            route_file = f"routing_table/node{sender}"
+            route_file = f"../routing_table/node{sender}"
             candidate_paths = get_paths_from_routing_table(route_file, sender, receiver)
             
             # Sort paths by flow
@@ -559,12 +559,12 @@ def plot_payment_statistics(results):
     plt.show()
 
 if __name__ == "__main__":
-    file_path = "creditcard.csv"  # CSV file path
+    file_path = "../creditcard.csv"  # CSV file path
 
     clear_log_table() # Clear the log table
 
     # Load the Lightning Network graph
-    with open("lightning_network.txt", "r") as f:
+    with open("../scripts/lightning_network.txt", "r") as f:
         for line in f:
             parts = line.strip().split(maxsplit=2)
             if len(parts) != 3:
