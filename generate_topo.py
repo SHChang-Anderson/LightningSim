@@ -44,10 +44,10 @@ def generate_lightning_network(num_nodes, m, mean_capacity, median_capacity):
     return G
 
 if __name__ == "__main__":
-    num_nodes = int(input("set the num_nodes"))
+    num_nodes = int(input("set the num_nodes: "))
     m = 4  # BA model parameter
-    mean_capacity = 5000000  # Mean channel capacity: 20 million satoshis
-    median_capacity = 399999  # Median channel capacity: 5 million satoshis
+    mean_capacity = 9250554 # Mean channel capacity: 20 million satoshis
+    median_capacity = 1641666  # Median channel capacity: 5 million satoshis
     file_path = "creditcard.csv"  # CSV file path
 
     # Generate network

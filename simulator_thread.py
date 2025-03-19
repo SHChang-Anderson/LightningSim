@@ -206,7 +206,7 @@ def probing_worker(G, task_queue, stop_event, simulation_start_time):
                 continue
 
             try:
-                
+
                 # Update channel capacities
                 for i in range(len(probing_task.path) - 1):
                     u, v = probing_task.path[i], probing_task.path[i + 1]
@@ -216,7 +216,7 @@ def probing_worker(G, task_queue, stop_event, simulation_start_time):
                 probing_task.message = f"Error probing path: {str(e)}"
             
             # Record the probing results to log table
-            record_probe_results(probing_task.path[0][0], probing_task)
+            record_probe_results(probing_task.path[0], probing_task)
 
             # Mark the task as done
             task_queue.task_done()
@@ -425,13 +425,10 @@ def prepare_payment_tasks_poisson(G, payment_amounts, rate):
             route_file = f"routing_table/node{sender}"
             candidate_paths = get_paths_from_routing_table(route_file, sender, receiver)
             
-            if candidate_paths:
-                # Sort paths by flow
-                candidate_paths.sort(key=lambda x: x[1], reverse=True)
-                path = candidate_paths[0][0]  # Select the path with the highest flow
-            else:
-                # If no path is found in the routing table, use the shortest path
-                path = nx.shortest_path(G, sender, receiver)
+            # Sort paths by flow
+            candidate_paths.sort(key=lambda x: x[1], reverse=True)
+            path = candidate_paths[0][0]  # Select the path with the highest flow
+            # path = nx.shortest_path(G, sender, receiver)
                 
             # Create a payment task with arrival time
             task = PaymentTask(i+1, sender, receiver, amount, path, arrival_time)
@@ -442,7 +439,8 @@ def prepare_payment_tasks_poisson(G, payment_amounts, rate):
                 ct += 1
                 if (ct > 5):
                     break
-                probing_task = ProbeTask(path1, arrival_time)
+                print(path1[0])
+                probing_task = ProbeTask(path1[0], arrival_time)
                 probing_tasks.append(probing_task)
     
         except nx.NetworkXNoPath:  
@@ -542,11 +540,12 @@ if __name__ == "__main__":
     print(f"Median channel capacity: {np.median(capacities):.2f} satoshis")
 
     # Load payment amounts from creditcard.csv
-    num_payments = 1000  # Simulate 1000 payments
+    num_payments = int(input("Numbers of payments: "))  # Simulate 1000 payments
+    payment_per_second = int(input("Payments per second: "))  # Average 1 payment per second
     payment_amounts = load_payment_amounts(file_path, num_payments)
 
     # Prepare payment tasks
-    payment_tasks, probing_task = prepare_payment_tasks_poisson(G, payment_amounts, 3000)
+    payment_tasks, probing_task = prepare_payment_tasks_poisson(G, payment_amounts, payment_per_second)
     
     print(f"Prepared {len(payment_tasks)} payment tasks and {len(probing_task)} probing tasks.")
     
