@@ -13,6 +13,11 @@ import sys
 
 np.random.seed(42)
 
+G = nx.DiGraph()
+
+# Create a probing task queue
+probing_task_queue = queue.PriorityQueue()
+
 def clear_log_table():
     log_dir = "./log_table"
     if os.path.exists(log_dir):
@@ -28,6 +33,49 @@ def clear_log_table():
                 print(f"Failed to delete {file_path}. Reason: {e}")
     else:
         print(f"{log_dir} does not exist.")
+
+def read_paths_from_log(log_file):
+    """
+    Read paths from a node log file in reverse order and store them in a list.
+
+    Parameters:
+    - log_file (str): Path to the log file.
+
+    Returns:
+    - paths (list): A list of dictionaries containing path, flow, and fee.
+    """
+    paths = []
+    if not os.path.exists(log_file):
+        print(f"{log_file} does not exist.")
+        return paths
+
+    with open(log_file, "r") as f:
+        lines = f.readlines()
+
+    # Process lines in reverse order
+    for line in reversed(lines):
+        line = line.strip()
+        if line.startswith("Path:"):
+            try:
+                # Extract path, flow, and fee
+                parts = line.split(", ")
+                path_str = parts[0].split(":")[1].strip()  # Extract path
+                flow = int(parts[1].split(":")[1].strip())  # Extract flow
+                fee = int(parts[2].split(":")[1].strip())  # Extract fee
+
+                # Convert path to a list of integers (remove 'node' prefix)
+                path = [int(node.replace("node", "")) for node in path_str.split()]
+
+                # Append to paths
+                paths.append({
+                    "path": path,
+                    "flow": flow,
+                    "fee": fee
+                })
+            except Exception as e:
+                print(f"Failed to parse line: {line}. Reason: {e}")
+
+    return paths
 
 def get_paths_from_routing_table(filename, source, destination):
     """
@@ -152,13 +200,14 @@ class ChannelLockManager:
         for channel in channels:
             self.release_channel_lock(channel)
 
-def record_probe_results(node_id, probe_tasks):
+def record_probe_results(node_id, probe_tasks, simulation_start_time):
     """
     Record the results of probing tasks to a log file.
 
     Parameters:
     - node_id (str): The ID of the source node.
     - probe_tasks (list): A list of ProbeTask objects containing probing results.
+    - simulation_start_time (float): The simulation start time in seconds.
     """
     log_dir = "./log_table"
     os.makedirs(log_dir, exist_ok=True)  # Ensure the log directory exists
@@ -173,7 +222,8 @@ def record_probe_results(node_id, probe_tasks):
     results_by_destination[destination].append({
         "path": probe_tasks.path,
         "flow": probe_tasks.amount,  # The probed flow is the minimum capacity along the path
-        "fee": len(probe_tasks.path) - 1  # Fee is based on the number of hops
+        "fee": len(probe_tasks.path) - 1,  # Fee is based on the number of hops
+        "timestamp": time.time() - simulation_start_time  # Time since simulation start
     })
 
     # Write results to the log file
@@ -183,27 +233,17 @@ def record_probe_results(node_id, probe_tasks):
                 path_str = " ".join(f"node{n}" for n in path_info["path"])
                 flow = path_info["flow"]
                 fee = path_info["fee"]
-                f.write(f"  Path: {path_str}, Flow: {flow}, Fee: {fee}\n")
+                timestamp = path_info["timestamp"]  # Time since simulation start
+                f.write(f"  Path: {path_str}, Flow: {flow}, Fee: {fee}, Time Since Start: {timestamp:.2f} seconds\n")
 
-def probing_worker(G, task_queue, stop_event, simulation_start_time):
+def probing_worker(stop_event, simulation_start_time):
     """
     Worker function for probing the network.
     """
     while not stop_event.is_set():
         try:
             # Get the next probing task from the queue
-            probing_task = task_queue.get(block=True, timeout=1)
-
-                        # Calculate the current simulation time
-            current_time = time.time() - simulation_start_time
-            
-            # Check if it's time to process this payment
-            if current_time < probing_task.arrival_time:
-                # If not time yet, put it back in the queue and wait
-                task_queue.put(probing_task)
-                task_queue.task_done()  # Important: mark this task as done before re-adding
-                # time.sleep(0.001)  # Short sleep to prevent CPU spinning
-                continue
+            probing_task = probing_task_queue.get(block=True, timeout=1)
 
             try:
 
@@ -216,16 +256,16 @@ def probing_worker(G, task_queue, stop_event, simulation_start_time):
                 probing_task.message = f"Error probing path: {str(e)}"
             
             # Record the probing results to log table
-            record_probe_results(probing_task.path[0], probing_task)
+            record_probe_results(probing_task.path[0], probing_task, simulation_start_time)
 
             # Mark the task as done
-            task_queue.task_done()
+            probing_task_queue.task_done()
                    
         except queue.Empty:
             # Continue if the queue is empty
             pass
 
-def payment_worker(G, task_queue, result_queue, lock_manager, stop_event, simulation_start_time):
+def payment_worker(task_queue, result_queue, lock_manager, stop_event, simulation_start_time):
     """
     Worker function for processing individual payments.
     """
@@ -248,7 +288,26 @@ def payment_worker(G, task_queue, result_queue, lock_manager, stop_event, simula
             # Start processing the payment
             processing_start_time = time.time()
             
-            try:
+            try: 
+                candidate_paths = get_paths_from_routing_table(f"routing_table/node{payment_task.sender}", payment_task.sender, payment_task.receiver)
+                for path1 in candidate_paths:
+                    probing_task = ProbeTask(path1[0], time.time() - simulation_start_time)
+                    probing_task_queue.put(probing_task)
+
+
+                probing_task_queue.join()
+
+            
+                log_paths = read_paths_from_log(f"log_table/node_{payment_task.sender}.log")
+
+                # print( payment_task.path, log_paths[0]["path"])
+                for log_path in log_paths:
+                    if payment_task.sender == log_path["path"][0] and payment_task.receiver == log_path["path"][-1] and log_path['flow'] >= payment_task.amount:
+                        payment_task.path = log_path["path"]
+                        break
+                    else:
+                        continue
+
                 # Acquire locks for all channels on the path
                 channels = lock_manager.acquire_path_locks(payment_task.path)
                 
@@ -276,6 +335,7 @@ def payment_worker(G, task_queue, result_queue, lock_manager, stop_event, simula
                 lock_manager.release_path_locks(channels)
                 
             except Exception as e:
+                print(f"Error processing payment: {str(e)}")    
                 payment_task.message = f"Error processing payment: {str(e)}"
             
             # Calculate processing time and completion time
@@ -294,7 +354,7 @@ def payment_worker(G, task_queue, result_queue, lock_manager, stop_event, simula
 
 
 # Simulate threaded payments with Poisson arrival
-def simulate_threaded_payments_poisson(G, payment_tasks, probing_task, num_threads=10):
+def simulate_threaded_payments_poisson(payment_tasks, probing_task, num_threads=10):
     """
     Simulate parallel payments in the Lightning Network using multiple threads.
     Payments arrive according to a Poisson process.
@@ -303,9 +363,6 @@ def simulate_threaded_payments_poisson(G, payment_tasks, probing_task, num_threa
     task_queue = queue.PriorityQueue()
     result_queue = queue.Queue()
     
-    # Create a probing task queue
-    probing_task_queue = queue.PriorityQueue()
-
     # Create a lock manager
     lock_manager = ChannelLockManager()
     
@@ -320,7 +377,7 @@ def simulate_threaded_payments_poisson(G, payment_tasks, probing_task, num_threa
     for _ in range(5):
         thread = threading.Thread(
             target=payment_worker,
-            args=(G, task_queue, result_queue, lock_manager, stop_event, simulation_start_time)
+            args=(task_queue, result_queue, lock_manager, stop_event, simulation_start_time)
         )
         thread.daemon = True
         thread.start()
@@ -335,7 +392,7 @@ def simulate_threaded_payments_poisson(G, payment_tasks, probing_task, num_threa
     for _ in range(20):
         thread = threading.Thread(
             target=probing_worker,
-            args=(G, probing_task_queue, stop_event, simulation_start_time)
+            args=(stop_event, simulation_start_time)
         )
         thread.daemon = True
         thread.start()
@@ -399,7 +456,7 @@ def generate_poisson_arrival_times(num_payments, rate):
     return arrival_times
 
 # Prepare payment tasks with Poisson arrival times
-def prepare_payment_tasks_poisson(G, payment_amounts, rate):
+def prepare_payment_tasks_poisson(payment_amounts, rate):
     """
     Prepare payment tasks for the simulation with Poisson arrival times.
     
@@ -433,15 +490,6 @@ def prepare_payment_tasks_poisson(G, payment_amounts, rate):
             # Create a payment task with arrival time
             task = PaymentTask(i+1, sender, receiver, amount, path, arrival_time)
             tasks.append(task)
-
-            ct = 0
-            for path1 in candidate_paths:
-                ct += 1
-                if (ct > 5):
-                    break
-                print(path1[0])
-                probing_task = ProbeTask(path1[0], arrival_time)
-                probing_tasks.append(probing_task)
     
         except nx.NetworkXNoPath:  
             print(f"Cannot find a path from {sender} to {receiver}, skipping payment {i+1}")  
@@ -516,7 +564,6 @@ if __name__ == "__main__":
     clear_log_table() # Clear the log table
 
     # Load the Lightning Network graph
-    G = nx.Graph()
     with open("lightning_network.txt", "r") as f:
         for line in f:
             parts = line.strip().split(maxsplit=2)
@@ -545,7 +592,7 @@ if __name__ == "__main__":
     payment_amounts = load_payment_amounts(file_path, num_payments)
 
     # Prepare payment tasks
-    payment_tasks, probing_task = prepare_payment_tasks_poisson(G, payment_amounts, payment_per_second)
+    payment_tasks, probing_task = prepare_payment_tasks_poisson(payment_amounts, payment_per_second)
     
     print(f"Prepared {len(payment_tasks)} payment tasks and {len(probing_task)} probing tasks.")
     
@@ -553,7 +600,7 @@ if __name__ == "__main__":
     start_time = time.time()
     
     # Simulate threaded payments
-    successful_payments, total_payments, results = simulate_threaded_payments_poisson(G, payment_tasks, probing_task, num_threads=20)
+    successful_payments, total_payments, results = simulate_threaded_payments_poisson(payment_tasks, probing_task, num_threads=20)
     
     # Calculate and print the success rate
     end_time = time.time()

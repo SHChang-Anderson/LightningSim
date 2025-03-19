@@ -27,29 +27,42 @@ def generate_channel_capacities(num_channels, mean_capacity, median_capacity):
 # Function to generate a scale-free network and assign channel capacities
 def generate_lightning_network(num_nodes, m, mean_capacity, median_capacity):
     """
-    Generate a simulated Lightning Network topology.
+    Generate a simulated Lightning Network topology with bidirectional edges.
     Parameters:
     - num_nodes: Number of nodes
     - m: Number of connections per new node in BA model
     - mean_capacity: Mean channel capacity (satoshis)
     - median_capacity: Median channel capacity (satoshis)
     Returns:
-    - G: NetworkX graph with nodes and edges containing capacity attributes
+    - G: NetworkX directed graph with nodes and edges containing capacity attributes
     """
-    G = nx.barabasi_albert_graph(num_nodes, m)
-    num_channels = G.number_of_edges()
+    # Generate a scale-free network using the Barabási-Albert model
+    undirected_graph = nx.barabasi_albert_graph(num_nodes, m)
+    directed_graph = nx.DiGraph()
+
+    # Copy nodes to the directed graph
+    directed_graph.add_nodes_from(undirected_graph.nodes())
+
+    # Generate capacities for all edges
+    num_channels = undirected_graph.number_of_edges()
     capacities = generate_channel_capacities(num_channels, mean_capacity, median_capacity)
-    for i, (u, v) in enumerate(G.edges()):
-        G[u][v]['capacity'] = capacities[i]
-    return G
+
+    # Add edges and their reverse edges with capacities
+    for i, (u, v) in enumerate(undirected_graph.edges()):
+        capacity = capacities[i]
+        directed_graph.add_edge(u, v, capacity=capacity)  # Original direction
+        directed_graph.add_edge(v, u, capacity=capacity)  # Reverse direction
+
+    return directed_graph
 
 if __name__ == "__main__":
-    num_nodes = int(input("set the num_nodes: "))
-    m = 4  # BA model parameter
-    mean_capacity = 9250554 # Mean channel capacity: 20 million satoshis
-    median_capacity = 1641666  # Median channel capacity: 5 million satoshis
-    file_path = "creditcard.csv"  # CSV file path
+    num_nodes = int(input("Set the number of nodes: "))
+    m = 2  # BA model parameter
+    mean_capacity = 92505540  # Mean channel capacity: 20 million satoshis
+    median_capacity = 16416660  # Median channel capacity: 5 million satoshis
 
-    # Generate network
+    # Generate the bidirectional network
     G = generate_lightning_network(num_nodes, m, mean_capacity, median_capacity)
+
+    # Save the network to a file
     nx.write_edgelist(G, "lightning_network.txt", data=True)
