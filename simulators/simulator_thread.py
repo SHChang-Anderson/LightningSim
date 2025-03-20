@@ -669,8 +669,8 @@ if __name__ == "__main__":
     print(f"Median channel capacity: {np.median(capacities):.2f} satoshis")
 
     # Load payment amounts from creditcard.csv
-    num_payments = int(input("Numbers of payments: "))  # Simulate 1000 payments
-    payment_per_second = int(input("Payments per second: "))  # Average 1 payment per second
+    num_payments = int(sys.argv[2]) if len(sys.argv) > 2 else 100  # default to 100
+    payment_per_second = int(sys.argv[3]) if len(sys.argv) > 3 else 100 # default to 100
     payment_amounts = load_payment_amounts(file_path, num_payments)
 
     # Prepare payment tasks
@@ -694,5 +694,5 @@ if __name__ == "__main__":
     print(f"\nSuccess Rate: {success_rate:.2f}%")
     print(f"Successful Payments: {successful_payments}/{total_payments}")
     print(f"Execution Time: {end_time - start_time:.2f} seconds")
-    visualize_network(G)
-    plot_payment_statistics(results)
+    # visualize_network(G)
+    # plot_payment_statistics(results)
