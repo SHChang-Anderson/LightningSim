@@ -15,27 +15,58 @@ np.random.seed(42)
 
 G = nx.DiGraph()
 
-log_locks = {}
-log_locks_lock = threading.Lock()
+log_table = {}  # Global variable used to store the log table
+log_table_locks = {}  # Used to store the locks for each [sender][receiver]
+log_table_locks_lock = threading.Lock()  # Lock used to protect log_table_locks
 
 # Create a probing task queue
 probing_task_queue = queue.PriorityQueue()
 
 def clear_log_table():
-    log_dir = "../log_table"
-    if os.path.exists(log_dir):
-        # Delete all files and subdirectories in the directory
-        for filename in os.listdir(log_dir):
-            file_path = os.path.join(log_dir, filename)
-            try:
-                if os.path.isfile(file_path) or os.path.islink(file_path):
-                    os.unlink(file_path)  # Delete file or symbolic link
-                elif os.path.isdir(file_path):
-                    shutil.rmtree(file_path)  # Delete subdirectory
-            except Exception as e:
-                print(f"Failed to delete {file_path}. Reason: {e}")
+    """
+    Clear the global log_table and all associated locks.
+    """
+    global log_table, log_table_locks
+    with log_table_locks_lock:
+        log_table.clear()
+        log_table_locks.clear()
+
+def get_log_table_lock(sender, receiver):
+    """
+    Ensure a lock exists for the specified [sender][receiver] combination.
+
+    Parameters:
+    - sender (int): The sender node ID.
+    - receiver (int): The receiver node ID.
+
+    Returns:
+    - threading.Lock: The lock for the specified [sender][receiver].
+    """
+    global log_table_locks
+    with log_table_locks_lock:
+        if sender not in log_table_locks:
+            log_table_locks[sender] = {}
+        if receiver not in log_table_locks[sender]:
+            log_table_locks[sender][receiver] = threading.Lock()
+        return log_table_locks[sender][receiver]
+    
+def get_paths_from_log_table(sender, receiver):
+    """
+    Retrieve paths from the global log_table for a specific sender and receiver.
+
+    Parameters:
+    - sender (int): The sender node ID.
+    - receiver (int): The receiver node ID.
+
+    Returns:
+    - list: A list of dictionaries containing path, flow, fee, and timestamp.
+    """
+    global log_table
+
+    if sender in log_table and receiver in log_table[sender]:
+        return log_table[sender][receiver]
     else:
-        print(f"{log_dir} does not exist.")
+        return []  # Return an empty list if no paths are found
 
 def read_paths_from_log(log_file, destination):
     """
@@ -65,7 +96,7 @@ def read_paths_from_log(log_file, destination):
             # Check if this block corresponds to the specified destination
             current_destination = int(line.split("to node")[1].strip(":"))
             is_correct_destination = (current_destination == destination)
-            
+
         elif is_correct_destination and line.startswith("Path:"):
             try:
                 # Extract path, flow, fee, and timestamp
@@ -230,85 +261,51 @@ class ChannelLockManager:
         for channel in all_channels:
             self.release_channel_lock(channel)
 
-def record_probe_results(node_id, probe_tasks, simulation_start_time):
+def update_log_table(sender, receiver, path, flow, fee, timestamp):
     """
-    Record the results of probing tasks to a log file.
+    Update the global log_table with a new path entry.
 
     Parameters:
-    - node_id (str): The ID of the source node.
-    - probe_tasks (list): A list of ProbeTask objects containing probing results.
+    - sender (int): The sender node ID.
+    - receiver (int): The receiver node ID.
+    - path (list): The path as a list of node IDs.
+    - flow (int): The flow capacity of the path.
+    - fee (int): The fee for the path.
+    - timestamp (float): The timestamp of the path.
+    """
+    global log_table
+    lock = get_log_table_lock(sender, receiver)  # aquire lock for this sender-receiver pair
+    with lock:
+        if sender not in log_table:
+            log_table[sender] = {}
+        if receiver not in log_table[sender]:
+            log_table[sender][receiver] = []
+        
+        # Append the new path entry
+        log_table[sender][receiver].append({
+            "path": path,
+            "flow": flow,
+            "fee": fee,
+            "timestamp": timestamp
+        })            
+
+def record_probe_results(node_id, probe_tasks, simulation_start_time):
+    """
+    Record the results of probing tasks to the global log_table.
+
+    Parameters:
+    - node_id (int): The ID of the source node.
+    - probe_tasks (ProbeTask): The probing task containing path information.
     - simulation_start_time (float): The simulation start time in seconds.
     """
-    log_dir = "../log_table"
-    os.makedirs(log_dir, exist_ok=True)  # Ensure the log directory exists
-    log_file = os.path.join(log_dir, f"node_{node_id}.log")
+    destination = probe_tasks.path[-1]  # The last node in the path is the destination
+    path = probe_tasks.path
+    flow = probe_tasks.amount  # The probed flow is the minimum capacity along the path
+    fee = len(probe_tasks.path) - 1  # Fee is based on the number of hops
+    timestamp = round(time.time() - simulation_start_time, 2)  # Time since the simulation started
 
-    # Ensure a lock exists for this node_id
-    with log_locks_lock:
-        if node_id not in log_locks:
-            log_locks[node_id] = threading.Lock()
-
-    # Use the lock for this node_id
-    with log_locks[node_id]:
-        # Read existing log file if it exists
-        existing_results = {}
-        if os.path.exists(log_file):
-            with open(log_file, "r") as file:
-                current_destination = None
-                for line in file:
-                    line = line.strip()
-                    if line.startswith("Paths from"):
-                        current_destination = int(line.split("to node")[1].strip(":"))
-                        existing_results[current_destination] = []
-                    elif line.startswith("Path:"):
-                        parts = line.split(", ")
-                        path = parts[0].split(": ")[1].split()
-                        flow = int(parts[1].split(": ")[1])
-                        fee = int(parts[2].split(": ")[1])
-                        timestamp = float(parts[3].split(": ")[1])
-                        existing_results[current_destination].append({
-                            "path": [int(node.replace("node", "")) for node in path],
-                            "flow": flow,
-                            "fee": fee,
-                            "timestamp": timestamp
-                        })
-
-        # Group probe tasks by destination node
-        results_by_destination = {}
-
-        destination = probe_tasks.path[-1]  # The last node in the path is the destination
-        if destination not in results_by_destination:
-            results_by_destination[destination] = []
-        results_by_destination[destination].append({
-            "path": probe_tasks.path,
-            "flow": probe_tasks.amount,  # The probed flow is the minimum capacity along the path
-            "fee": len(probe_tasks.path) - 1,  # Fee is based on the number of hops
-            "timestamp": round(time.time() - simulation_start_time, 2)  # Time since the simulation started, rounded to 2 decimal places
-        })
-
-        # Update or add new results
-        for destination, new_paths in results_by_destination.items():
-            if destination not in existing_results:
-                existing_results[destination] = []
-            for new_path in new_paths:
-                updated = False
-                for existing_path in existing_results[destination]:
-                    if existing_path["path"] == new_path["path"]:
-                        # Update flow if the path already exists
-                        existing_path["flow"] = new_path["flow"]
-                        updated = True
-                        break
-                if not updated:
-                    # Add new path if it doesn't exist
-                    existing_results[destination].append(new_path)
-
-        # Write updated results back to the log file
-        with open(log_file, "w") as file:
-            for destination, paths in existing_results.items():
-                file.write(f"Paths from node{node_id} to node{destination}:\n")
-                for path_info in paths:
-                    path_str = " ".join(map(str, path_info["path"]))  # Convert integers to strings
-                    file.write(f"  Path: {path_str}, Flow: {path_info['flow']}, Fee: {path_info['fee']}, Timestamp: {path_info['timestamp']}\n")
+    # Update the log_table
+    update_log_table(node_id, destination, path, flow, fee, timestamp)
 
 def probing_worker(stop_event, simulation_start_time):
     """
@@ -320,7 +317,7 @@ def probing_worker(stop_event, simulation_start_time):
             probing_task = probing_task_queue.get(block=True, timeout=1)
 
             try:
-
+                global G
                 # Update channel capacities
                 for i in range(len(probing_task.path) - 1):
                     u, v = probing_task.path[i], probing_task.path[i + 1]
@@ -363,28 +360,33 @@ def payment_worker(task_queue, result_queue, lock_manager, stop_event, simulatio
             processing_start_time = time.time()
             
             try: 
-                candidate_paths = get_paths_from_routing_table(f"../routing_table/node{payment_task.sender}", payment_task.sender, payment_task.receiver)
-                for path1 in candidate_paths:
-                    probing_task = ProbeTask(path1[0], time.time() - simulation_start_time)
-                    probing_task_queue.put(probing_task)
 
+                # Check if argv is provided and set the flag
+                execute_probing = int(sys.argv[1]) if len(sys.argv) > 1 else 0  # 默認為 0
 
-                probing_task_queue.join()
+                if execute_probing == 1:
+                    candidate_paths = get_paths_from_routing_table(f"../routing_table/node{payment_task.sender}", payment_task.sender, payment_task.receiver)
+                    for path1 in candidate_paths:
+                        probing_task = ProbeTask(path1[0], time.time() - simulation_start_time)
+                        probing_task_queue.put(probing_task)
 
-            
-                log_paths = read_paths_from_log(f"../log_table/node_{payment_task.sender}.log", payment_task.receiver)
+                    probing_task_queue.join()
 
-                # Sort paths by flow
-                log_paths.sort(key=lambda x: x["flow"], reverse=True)
+                    log_paths = get_paths_from_log_table(payment_task.sender, payment_task.receiver)
 
-                # print( payment_task.path, log_paths[0]["path"])
-                for log_path in log_paths:
-                    payment_task.path = log_path["path"]
-                    break
+                    # Sort paths by flow
+                    log_paths.sort(key=lambda x: x["flow"], reverse=True)
 
+                    # print( payment_task.path, log_paths[0]["path"])
+                    for log_path in log_paths:
+                        payment_task.path = log_path["path"]
+                        break
+                
                 # Acquire locks for all channels on the path
                 channels = lock_manager.acquire_path_locks(payment_task.path)
                 
+                global G
+
                 # Check if the path has enough capacity
                 has_capacity = True
                 for i in range(len(payment_task.path) - 1):
@@ -684,6 +686,8 @@ if __name__ == "__main__":
     
     # Calculate and print the success rate
     end_time = time.time()
+
+    clear_log_table() # Clear the log table
     
     # Print the results
     success_rate = (successful_payments / total_payments) * 100
