@@ -1,15 +1,15 @@
 import os
 import shutil
-import re  # 用於解析數字
+import re  # Used for parsing numbers
 from collections import deque
 
 def delete_directory(directory):
-    """刪除目錄（如果存在）"""
+    """Delete a directory (if it exists)"""
     if os.path.exists(directory):
         shutil.rmtree(directory)
 
 def bfs(graph, residual_graph, vs, vd):
-    """執行 BFS 搜尋可用路徑"""
+    """Perform BFS to search for available paths"""
     queue = deque([vs])
     parent = {vs: None}
     while queue:
@@ -23,7 +23,7 @@ def bfs(graph, residual_graph, vs, vd):
     return None
 
 def candidate_path_computation(graph, capacity, base_fee, vs):
-    """計算候選路徑"""
+    """Compute candidate paths"""
     candidate_paths = {}
     for vd in graph:
         if vd == vs:
@@ -66,16 +66,16 @@ def candidate_path_computation(graph, capacity, base_fee, vs):
     
     return candidate_paths
 
-# 清除舊的 routing table
+# Clear the old routing table
 directory_to_delete = "../routing_table"
 delete_directory(directory_to_delete)
 
-# 初始化 graph, capacity, base_fee
+# Initialize graph, capacity, base_fee
 graph = {}
 capacity = {}
 base_fee = {}
 
-# 讀取 lightning_network.txt
+# Read lightning_network.txt
 with open("lightning_network.txt", "r") as file:
     for line in file:
         if not line.strip():
@@ -83,17 +83,17 @@ with open("lightning_network.txt", "r") as file:
         parts = line.split()
         node1, node2 = int(parts[0]), int(parts[1])
         
-        # 使用正則表達式解析 `capacity`
+        # Use regular expressions to parse `capacity`
         match = re.search(r"np\.int64\((\d+)\)", line)
         if match:
-            capacity_value = int(match.group(1))  # 取出數字部分
+            capacity_value = int(match.group(1))  # Extract the numeric part
         else:
-            print(f"解析錯誤：{line.strip()}")
+            print(f"Parsing error: {line.strip()}")
             continue
         
-        fee = 1  # 假設 base fee 為 1，可自行調整
+        fee = 1  # Assume base fee is 1, can be adjusted
         
-        # 建立 graph 結構
+        # Build the graph structure
         if node1 not in graph:
             graph[node1] = []
         if node2 not in graph[node1]:
@@ -103,15 +103,15 @@ with open("lightning_network.txt", "r") as file:
         if node1 not in graph[node2]:
             graph[node2].append(node1)
 
-        # 設定 capacity
+        # Set capacity
         capacity[(node1, node2)] = capacity_value
         capacity[(node2, node1)] = capacity_value
 
-        # 設定 base fee
+        # Set base fee
         base_fee[(node1, node2)] = fee
         base_fee[(node2, node1)] = fee
 
-# 建立 routing table
+# Create the routing table
 folder_name = "../routing_table"
 os.makedirs(folder_name, exist_ok=True)
 
@@ -125,4 +125,4 @@ for i in graph:
                 path_str = ' '.join(f"node{n}" for n in path)
                 file.write(f"  Path: {path_str}, Flow: {flow}, Fee: {fee}\n")
 
-print("Routing table 已建立！")
+print("Routing table has been created!")
