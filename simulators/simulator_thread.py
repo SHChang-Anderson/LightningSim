@@ -185,19 +185,36 @@ class ChannelLockManager:
             self.locks[channel].release()
             
     def acquire_path_locks(self, path):
-        """Acquire locks for all channels on the path"""
-        channels = [(path[i], path[i+1]) for i in range(len(path)-1)]
+        """Acquire locks for all channels on the path, including reverse channels"""
+        # Generate a list of both forward and reverse channels
+        channels = []
+        for i in range(len(path) - 1):
+            u, v = path[i], path[i + 1]
+            channels.append((u, v))  # Forward channel
+            channels.append((v, u))  # Reverse channel
+
         # Sort the channels to avoid deadlocks
         channels.sort()
-        
+
+        # Acquire locks for all channels
         for channel in channels:
             self.acquire_channel_lock(channel)
-        
+
         return channels
         
     def release_path_locks(self, channels):
-        """Release locks for all channels on the path"""
-        for channel in channels:
+        """Release locks for all channels on the path, including reverse channels"""
+        # Generate a list of both forward and reverse channels
+        all_channels = []
+        for u, v in channels:
+            all_channels.append((u, v))  # Forward channel
+            all_channels.append((v, u))  # Reverse channel
+
+        # Remove duplicates (if any) and sort to ensure consistency
+        all_channels = sorted(set(all_channels))
+
+        # Release locks for all channels
+        for channel in all_channels:
             self.release_channel_lock(channel)
 
 def record_probe_results(node_id, probe_tasks, simulation_start_time):
@@ -289,24 +306,6 @@ def payment_worker(task_queue, result_queue, lock_manager, stop_event, simulatio
             processing_start_time = time.time()
             
             try: 
-                candidate_paths = get_paths_from_routing_table(f"../routing_table/node{payment_task.sender}", payment_task.sender, payment_task.receiver)
-                for path1 in candidate_paths:
-                    probing_task = ProbeTask(path1[0], time.time() - simulation_start_time)
-                    probing_task_queue.put(probing_task)
-
-
-                probing_task_queue.join()
-
-            
-                log_paths = read_paths_from_log(f"../log_table/node_{payment_task.sender}.log")
-
-                # print( payment_task.path, log_paths[0]["path"])
-                for log_path in log_paths:
-                    if payment_task.sender == log_path["path"][0] and payment_task.receiver == log_path["path"][-1] and log_path['flow'] >= payment_task.amount:
-                        payment_task.path = log_path["path"]
-                        break
-                    else:
-                        continue
 
                 # Acquire locks for all channels on the path
                 channels = lock_manager.acquire_path_locks(payment_task.path)
@@ -502,11 +501,17 @@ def prepare_payment_tasks_poisson(payment_amounts, rate):
 # Load payment amounts
 def load_payment_amounts(file_path, num_payments):
     """
-    Load transaction amounts from creditcard.csv and map them to payment simulation.
+    Load random transaction amounts from creditcard.csv and map them to payment simulation.
     """
     df = pd.read_csv(file_path)
-    amounts = df['Amount'].head(num_payments).values * 100000  # Convert to satoshis (assuming 1 USD = 100,000 satoshis)
+    
+    # Randomly select `num_payments` rows from the 'Amount' column
+    amounts = np.random.choice(df['Amount'].values, size=num_payments, replace=False)
+    
+    # Convert amounts to satoshis (assuming 1 USD = 11168.89 satoshis)
+    amounts = amounts * 11168.89
     amounts = np.round(amounts).astype(int)
+    
     return amounts
 
 # Visualize the network

@@ -57,9 +57,9 @@ def generate_lightning_network(num_nodes, m, mean_capacity, median_capacity):
 
 if __name__ == "__main__":
     num_nodes = int(input("Set the number of nodes: "))
-    m = 2  # BA model parameter
-    mean_capacity = 92505540  # Mean channel capacity: 20 million satoshis
-    median_capacity = 16416660  # Median channel capacity: 5 million satoshis
+    m = 5  # BA model parameter
+    mean_capacity = 64040688  # Mean channel capacity: 20 million satoshis
+    median_capacity = 900421  # Median channel capacity: 5 million satoshis
 
     # Generate the bidirectional network
     G = generate_lightning_network(num_nodes, m, mean_capacity, median_capacity)
