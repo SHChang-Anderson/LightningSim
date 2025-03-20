@@ -15,6 +15,9 @@ np.random.seed(42)
 
 G = nx.DiGraph()
 
+log_locks = {}
+log_locks_lock = threading.Lock()
+
 # Create a probing task queue
 probing_task_queue = queue.PriorityQueue()
 
@@ -34,15 +37,16 @@ def clear_log_table():
     else:
         print(f"{log_dir} does not exist.")
 
-def read_paths_from_log(log_file):
+def read_paths_from_log(log_file, destination):
     """
-    Read paths from a node log file in reverse order and store them in a list.
+    Read paths from a node log file for a specific destination and store them in a list.
 
     Parameters:
     - log_file (str): Path to the log file.
+    - destination (int): The destination node ID to filter paths.
 
     Returns:
-    - paths (list): A list of dictionaries containing path, flow, and fee.
+    - paths (list): A list of dictionaries containing path, flow, fee, and timestamp.
     """
     paths = []
     if not os.path.exists(log_file):
@@ -52,25 +56,34 @@ def read_paths_from_log(log_file):
     with open(log_file, "r") as f:
         lines = f.readlines()
 
-    # Process lines in reverse order
-    for line in reversed(lines):
+    # Track whether we are processing the correct destination block
+    is_correct_destination = False
+
+    for line in lines:
         line = line.strip()
-        if line.startswith("Path:"):
+        if line.startswith("Paths from"):
+            # Check if this block corresponds to the specified destination
+            current_destination = int(line.split("to node")[1].strip(":"))
+            is_correct_destination = (current_destination == destination)
+            
+        elif is_correct_destination and line.startswith("Path:"):
             try:
-                # Extract path, flow, and fee
+                # Extract path, flow, fee, and timestamp
                 parts = line.split(", ")
                 path_str = parts[0].split(":")[1].strip()  # Extract path
                 flow = int(parts[1].split(":")[1].strip())  # Extract flow
                 fee = int(parts[2].split(":")[1].strip())  # Extract fee
+                timestamp = float(parts[3].split(":")[1].strip())  # Extract timestamp
 
-                # Convert path to a list of integers (remove 'node' prefix)
-                path = [int(node.replace("node", "")) for node in path_str.split()]
+                # Convert path to a list of integers
+                path = [int(node) for node in path_str.split()]
 
                 # Append to paths
                 paths.append({
                     "path": path,
                     "flow": flow,
-                    "fee": fee
+                    "fee": fee,
+                    "timestamp": timestamp
                 })
             except Exception as e:
                 print(f"Failed to parse line: {line}. Reason: {e}")
@@ -230,28 +243,72 @@ def record_probe_results(node_id, probe_tasks, simulation_start_time):
     os.makedirs(log_dir, exist_ok=True)  # Ensure the log directory exists
     log_file = os.path.join(log_dir, f"node_{node_id}.log")
 
-    # Group probe tasks by destination node
-    results_by_destination = {}
-    
-    destination = probe_tasks.path[-1]  # The last node in the path is the destination
-    if destination not in results_by_destination:
-        results_by_destination[destination] = []
-    results_by_destination[destination].append({
-        "path": probe_tasks.path,
-        "flow": probe_tasks.amount,  # The probed flow is the minimum capacity along the path
-        "fee": len(probe_tasks.path) - 1,  # Fee is based on the number of hops
-        "timestamp": time.time() - simulation_start_time  # Time since simulation start
-    })
+    # Ensure a lock exists for this node_id
+    with log_locks_lock:
+        if node_id not in log_locks:
+            log_locks[node_id] = threading.Lock()
 
-    # Write results to the log file
-    with open(log_file, "a") as f:
-        for dest, paths in results_by_destination.items():
-            for path_info in paths:
-                path_str = " ".join(f"node{n}" for n in path_info["path"])
-                flow = path_info["flow"]
-                fee = path_info["fee"]
-                timestamp = path_info["timestamp"]  # Time since simulation start
-                f.write(f"  Path: {path_str}, Flow: {flow}, Fee: {fee}, Time Since Start: {timestamp:.2f} seconds\n")
+    # Use the lock for this node_id
+    with log_locks[node_id]:
+        # Read existing log file if it exists
+        existing_results = {}
+        if os.path.exists(log_file):
+            with open(log_file, "r") as file:
+                current_destination = None
+                for line in file:
+                    line = line.strip()
+                    if line.startswith("Paths from"):
+                        current_destination = int(line.split("to node")[1].strip(":"))
+                        existing_results[current_destination] = []
+                    elif line.startswith("Path:"):
+                        parts = line.split(", ")
+                        path = parts[0].split(": ")[1].split()
+                        flow = int(parts[1].split(": ")[1])
+                        fee = int(parts[2].split(": ")[1])
+                        timestamp = float(parts[3].split(": ")[1])
+                        existing_results[current_destination].append({
+                            "path": [int(node.replace("node", "")) for node in path],
+                            "flow": flow,
+                            "fee": fee,
+                            "timestamp": timestamp
+                        })
+
+        # Group probe tasks by destination node
+        results_by_destination = {}
+
+        destination = probe_tasks.path[-1]  # The last node in the path is the destination
+        if destination not in results_by_destination:
+            results_by_destination[destination] = []
+        results_by_destination[destination].append({
+            "path": probe_tasks.path,
+            "flow": probe_tasks.amount,  # The probed flow is the minimum capacity along the path
+            "fee": len(probe_tasks.path) - 1,  # Fee is based on the number of hops
+            "timestamp": round(time.time() - simulation_start_time, 2)  # Time since the simulation started, rounded to 2 decimal places
+        })
+
+        # Update or add new results
+        for destination, new_paths in results_by_destination.items():
+            if destination not in existing_results:
+                existing_results[destination] = []
+            for new_path in new_paths:
+                updated = False
+                for existing_path in existing_results[destination]:
+                    if existing_path["path"] == new_path["path"]:
+                        # Update flow if the path already exists
+                        existing_path["flow"] = new_path["flow"]
+                        updated = True
+                        break
+                if not updated:
+                    # Add new path if it doesn't exist
+                    existing_results[destination].append(new_path)
+
+        # Write updated results back to the log file
+        with open(log_file, "w") as file:
+            for destination, paths in existing_results.items():
+                file.write(f"Paths from node{node_id} to node{destination}:\n")
+                for path_info in paths:
+                    path_str = " ".join(map(str, path_info["path"]))  # Convert integers to strings
+                    file.write(f"  Path: {path_str}, Flow: {path_info['flow']}, Fee: {path_info['fee']}, Timestamp: {path_info['timestamp']}\n")
 
 def probing_worker(stop_event, simulation_start_time):
     """
@@ -306,6 +363,24 @@ def payment_worker(task_queue, result_queue, lock_manager, stop_event, simulatio
             processing_start_time = time.time()
             
             try: 
+                candidate_paths = get_paths_from_routing_table(f"../routing_table/node{payment_task.sender}", payment_task.sender, payment_task.receiver)
+                for path1 in candidate_paths:
+                    probing_task = ProbeTask(path1[0], time.time() - simulation_start_time)
+                    probing_task_queue.put(probing_task)
+
+
+                probing_task_queue.join()
+
+            
+                log_paths = read_paths_from_log(f"../log_table/node_{payment_task.sender}.log", payment_task.receiver)
+
+                # Sort paths by flow
+                log_paths.sort(key=lambda x: x["flow"], reverse=True)
+
+                # print( payment_task.path, log_paths[0]["path"])
+                for log_path in log_paths:
+                    payment_task.path = log_path["path"]
+                    break
 
                 # Acquire locks for all channels on the path
                 channels = lock_manager.acquire_path_locks(payment_task.path)
