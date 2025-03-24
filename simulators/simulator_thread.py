@@ -362,7 +362,7 @@ def payment_worker(task_queue, result_queue, lock_manager, stop_event, simulatio
             try: 
 
                 # Check if argv is provided and set the flag
-                execute_probing = int(sys.argv[1]) if len(sys.argv) > 1 else 0  # 默認為 0
+                execute_probing = int(sys.argv[1]) if len(sys.argv) > 1 else 0  # default to 0
 
                 if execute_probing == 1:
                     candidate_paths = get_paths_from_routing_table(f"../routing_table/node{payment_task.sender}", payment_task.sender, payment_task.receiver)
@@ -383,32 +383,42 @@ def payment_worker(task_queue, result_queue, lock_manager, stop_event, simulatio
                         break
                 
                 # Acquire locks for all channels on the path
-                channels = lock_manager.acquire_path_locks(payment_task.path)
-                
-                global G
-
-                # Check if the path has enough capacity
+                channels = []
                 has_capacity = True
-                for i in range(len(payment_task.path) - 1):
-                    u, v = payment_task.path[i], payment_task.path[i + 1]
-                    if G[u][v]['capacity'] < payment_task.amount:
-                        has_capacity = False
-                        payment_task.message = f"Channel {u}-{v} has insufficient capacity: {G[u][v]['capacity']} < {payment_task.amount}"
-                        break
-                
-                # Update the capacity of all channels on the path
-                if has_capacity:
-                    # Update channel capacities
+                rollback_channels = []  # record channels that need to be rolled back
+
+                try:
                     for i in range(len(payment_task.path) - 1):
                         u, v = payment_task.path[i], payment_task.path[i + 1]
+                        
+                        lock_manager.acquire_channel_lock((u, v))
+                        channels.append((u, v))  # record the channel that has been locked
+                        
+                        # check if the channel has enough capacity
+                        if G[u][v]['capacity'] < payment_task.amount:
+                            has_capacity = False
+                            payment_task.message = f"Channel {u}-{v} has insufficient capacity: {G[u][v]['capacity']} < {payment_task.amount}"
+                            break
+                        
+                        # temporarily deduct the amount from the channel
                         G[u][v]['capacity'] -= payment_task.amount
                         G[v][u]['capacity'] += payment_task.amount
-                    
-                    payment_task.success = True
-                    payment_task.message = "Payment successful"
-                
-                # Release locks for all channels on the path
-                lock_manager.release_path_locks(channels)
+                        rollback_channels.append((u, v))  # record the channel that has been deducted
+
+                    # If all channels have enough capacity, the payment is successful
+                    if has_capacity:
+                        payment_task.success = True
+                        payment_task.message = "Payment successful"
+                    else:
+                        # If any channel does not have enough capacity, the payment fails
+                        for u, v in rollback_channels:
+                            G[u][v]['capacity'] += payment_task.amount
+                            G[v][u]['capacity'] -= payment_task.amount
+
+                finally:
+                    # Release locks for all channels on the path
+                    for channel in channels:
+                        lock_manager.release_channel_lock(channel)
                 
             except Exception as e:
                 print(f"Error processing payment: {str(e)}")    
