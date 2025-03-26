@@ -169,11 +169,36 @@ def get_paths_from_routing_table(filename, source, destination):
 
 # Randomly select a sender and receiver
 def random_sender_receiver(G):
+    """
+    Select a sender and receiver pair with a bias towards repeated transactions
+    and clustered transaction pairs.
+
+    Parameters:
+    - G (nx.Graph): The network graph.
+
+    Returns:
+    - sender (int): The selected sender node.
+    - receiver (int): The selected receiver node.
+    """
     nodes = list(G.nodes())  # Get a list of all nodes
-    sender = random.choice(nodes)  # Randomly select sender
-    receiver = random.choice(nodes)  # Randomly select receiver 
-    while sender == receiver:  # Ensure sender and receiver are different
+
+    # Define a list of frequent sender-receiver pairs
+    frequent_pairs = [
+        (random.choice(nodes), random.choice(nodes)) for _ in range(5)
+    ]
+
+    # Make sure the sender and receiver are different
+    frequent_pairs = [(s, r) for s, r in frequent_pairs if s != r]
+
+    # 80% of the time, select a frequent pair
+    if random.random() < 0.8 and frequent_pairs:
+        sender, receiver = random.choice(frequent_pairs)
+    else:
+        sender = random.choice(nodes)
         receiver = random.choice(nodes)
+        while sender == receiver:  # make sure sender and receiver are different
+            receiver = random.choice(nodes)
+
     return sender, receiver
 
 #  Payment task class
@@ -460,7 +485,7 @@ def simulate_threaded_payments_poisson(payment_tasks, probing_task, num_threads=
     
     # Create and start worker threads
     threads = []
-    for _ in range(5):
+    for _ in range(10):
         thread = threading.Thread(
             target=payment_worker,
             args=(task_queue, result_queue, lock_manager, stop_event, simulation_start_time)
