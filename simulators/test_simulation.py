@@ -22,10 +22,15 @@ def run_simulation(num_payments, payments_per_sec, execute_probing):
         
         # Parse the output to extract the success rate
         output = result.stdout
+        success_rate = -1
+        execution_time = -1
         for line in output.split("\n"):
             if "Success Rate" in line:
                 success_rate = float(line.split(":")[1].strip().replace("%", ""))
-                return success_rate
+            if "Average completion time:" in line: # Extract the execution time
+                execution_time = float(line.split(":")[1].strip().replace("seconds", ""))    
+            if success_rate != -1 and execution_time != -1:
+                return success_rate, execution_time
     except Exception as e:
         print(f"Error running simulation: {e}")
         return None
@@ -34,27 +39,27 @@ def test_simulation():
     """
     Test the simulator_thread.py script with different payment counts and probing settings.
     """
-    payment_counts = range(1000, 10000, 1000)  # From 100 to 5000 payments, step 500
+    payment_counts = range(1000, 5000, 1000)  # From 1000 to 9000 payments, step 1000
     success_rates_probing_0 = []
     success_rates_probing_1 = []
 
     # Run simulations for execute_probing = 0
     print("Running simulations with execute_probing = 0...")
     for num_payments in payment_counts:
-        success_rate = run_simulation(num_payments, num_payments // 3, 0)
+        success_rate, execution_time = run_simulation(num_payments, num_payments // 3, 0)
         if success_rate is not None:
             success_rates_probing_0.append(success_rate)
-            print(f"Payments: {num_payments}, Success Rate (Probing=0): {success_rate:.2f}%")
+            print(f"Payments: {num_payments}, Success Rate (Probing=0): {success_rate:.2f}%, Execution Time: {execution_time:.2f}s")
         else:
             success_rates_probing_0.append(0)  # Default to 0 if simulation fails
 
     # Run simulations for execute_probing = 1
     print("\nRunning simulations with execute_probing = 1...")
     for num_payments in payment_counts:
-        success_rate = run_simulation(num_payments, num_payments // 3, 1)
+        success_rate, execution_time = run_simulation(num_payments, num_payments // 3, 1)
         if success_rate is not None:
             success_rates_probing_1.append(success_rate)
-            print(f"Payments: {num_payments}, Success Rate (Probing=1): {success_rate:.2f}%")
+            print(f"Payments: {num_payments}, Success Rate (Probing=1): {success_rate:.2f}%, Execution Time: {execution_time:.2f}s")
         else:
             success_rates_probing_1.append(0)  # Default to 0 if simulation fails
 
