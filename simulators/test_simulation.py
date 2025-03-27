@@ -27,7 +27,7 @@ def run_simulation(num_payments, payments_per_sec, execute_probing):
         for line in output.split("\n"):
             if "Success Rate" in line:
                 success_rate = float(line.split(":")[1].strip().replace("%", ""))
-            if "Average completion time:" in line: # Extract the execution time
+            if "Average processing time:" in line: # Extract the execution time
                 execution_time = float(line.split(":")[1].strip().replace("seconds", ""))    
             if success_rate != -1 and execution_time != -1:
                 return success_rate, execution_time
@@ -46,20 +46,20 @@ def test_simulation():
     # Run simulations for execute_probing = 0
     print("Running simulations with execute_probing = 0...")
     for num_payments in payment_counts:
-        success_rate, execution_time = run_simulation(num_payments, num_payments // 3, 0)
+        success_rate, execution_time = run_simulation(num_payments, 1000, 0)
         if success_rate is not None:
             success_rates_probing_0.append(success_rate)
-            print(f"Payments: {num_payments}, Success Rate (Probing=0): {success_rate:.2f}%, Execution Time: {execution_time:.2f}s")
+            print(f"Payments: {num_payments}, Success Rate (Probing=0): {success_rate:.2f}%, Execution Time: {execution_time:.8f}s")
         else:
             success_rates_probing_0.append(0)  # Default to 0 if simulation fails
 
     # Run simulations for execute_probing = 1
     print("\nRunning simulations with execute_probing = 1...")
     for num_payments in payment_counts:
-        success_rate, execution_time = run_simulation(num_payments, num_payments // 3, 1)
+        success_rate, execution_time = run_simulation(num_payments, 1000, 1)
         if success_rate is not None:
             success_rates_probing_1.append(success_rate)
-            print(f"Payments: {num_payments}, Success Rate (Probing=1): {success_rate:.2f}%, Execution Time: {execution_time:.2f}s")
+            print(f"Payments: {num_payments}, Success Rate (Probing=1): {success_rate:.2f}%, Execution Time: {execution_time:.8f}s")
         else:
             success_rates_probing_1.append(0)  # Default to 0 if simulation fails
 

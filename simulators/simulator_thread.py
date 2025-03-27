@@ -168,13 +168,15 @@ def get_paths_from_routing_table(filename, source, destination):
     return paths
 
 # Randomly select a sender and receiver
-def random_sender_receiver(G):
+def random_sender_receiver(G, previous_transactions, repeat_ratio=0.86):
     """
     Select a sender and receiver pair with a bias towards repeated transactions
     and clustered transaction pairs.
 
     Parameters:
     - G (nx.Graph): The network graph.
+    - previous_transactions (list): A list of previous sender-receiver pairs.
+    - repeat_ratio (float): The ratio of transactions that are repeated (default: 0.86).
 
     Returns:
     - sender (int): The selected sender node.
@@ -182,22 +184,18 @@ def random_sender_receiver(G):
     """
     nodes = list(G.nodes())  # Get a list of all nodes
 
-    # Define a list of frequent sender-receiver pairs
-    frequent_pairs = [
-        (random.choice(nodes), random.choice(nodes)) for _ in range(5)
-    ]
-
-    # Make sure the sender and receiver are different
-    frequent_pairs = [(s, r) for s, r in frequent_pairs if s != r]
-
-    # 80% of the time, select a frequent pair
-    if random.random() < 0.8 and frequent_pairs:
-        sender, receiver = random.choice(frequent_pairs)
+    # 86% of the time, select a repeated transaction
+    if random.random() < repeat_ratio and previous_transactions:
+        sender, receiver = random.choice(previous_transactions)
     else:
+        # Generate a new sender-receiver pair
         sender = random.choice(nodes)
         receiver = random.choice(nodes)
-        while sender == receiver:  # make sure sender and receiver are different
+        while sender == receiver:  # Ensure sender and receiver are different
             receiver = random.choice(nodes)
+
+        # Add the new transaction to the previous transactions list
+        previous_transactions.append((sender, receiver))
 
     return sender, receiver
 
@@ -324,13 +322,14 @@ def record_probe_results(node_id, probe_tasks, simulation_start_time):
     - simulation_start_time (float): The simulation start time in seconds.
     """
     destination = probe_tasks.path[-1]  # The last node in the path is the destination
-    path = probe_tasks.path
+    path = probe_tasks.path # The probed path
     flow = probe_tasks.amount  # The probed flow is the minimum capacity along the path
     fee = len(probe_tasks.path) - 1  # Fee is based on the number of hops
     timestamp = round(time.time() - simulation_start_time, 2)  # Time since the simulation started
 
     # Update the log_table
     update_log_table(node_id, destination, path, flow, fee, timestamp)
+    update_log_table(node_id, path[0], path[::-1], flow, fee, timestamp)
 
 def probing_worker(stop_event, simulation_start_time):
     """
@@ -345,6 +344,7 @@ def probing_worker(stop_event, simulation_start_time):
                 global G
                 # Update channel capacities
                 for i in range(len(probing_task.path) - 1):
+                    time.sleep(0.0006)
                     u, v = probing_task.path[i], probing_task.path[i + 1]
                     probing_task.amount = min(probing_task.amount, G[u][v]['capacity'])
                 
@@ -390,22 +390,40 @@ def payment_worker(task_queue, result_queue, lock_manager, stop_event, simulatio
                 execute_probing = int(sys.argv[1]) if len(sys.argv) > 1 else 0  # default to 0
 
                 if execute_probing == 1:
-                    candidate_paths = get_paths_from_routing_table(f"../routing_table/node{payment_task.sender}", payment_task.sender, payment_task.receiver)
-                    for path1 in candidate_paths:
-                        probing_task = ProbeTask(path1[0], time.time() - simulation_start_time)
-                        probing_task_queue.put(probing_task)
-
-                    probing_task_queue.join()
-
+                    
                     log_paths = get_paths_from_log_table(payment_task.sender, payment_task.receiver)
+                    if (log_paths):
+                        
+                        candidate_paths = get_paths_from_routing_table(f"../routing_table/node{payment_task.sender}", payment_task.sender, payment_task.receiver)
+                        for path1 in candidate_paths:
+                            probing_task = ProbeTask(path1[0], time.time() - simulation_start_time)
+                            probing_task_queue.put(probing_task)
 
-                    # Sort paths by flow
-                    log_paths.sort(key=lambda x: x["flow"], reverse=True)
+                        # Sort paths by flow
+                        log_paths.sort(key=lambda x: x["flow"], reverse=True)
 
-                    # print( payment_task.path, log_paths[0]["path"])
-                    for log_path in log_paths:
-                        payment_task.path = log_path["path"]
-                        break
+                        # print( payment_task.path, log_paths[0]["path"])
+                        for log_path in log_paths:
+                            payment_task.path = log_path["path"]
+                            break
+                    else:
+                        candidate_paths = get_paths_from_routing_table(f"../routing_table/node{payment_task.sender}", payment_task.sender, payment_task.receiver)
+                        for path1 in candidate_paths:
+                            probing_task = ProbeTask(path1[0], time.time() - simulation_start_time)
+                            probing_task_queue.put(probing_task)
+
+                        probing_task_queue.join()
+
+                        
+                        log_paths = get_paths_from_log_table(payment_task.sender, payment_task.receiver)
+
+                        # Sort paths by flow
+                        log_paths.sort(key=lambda x: x["flow"], reverse=True)
+
+                        # print( payment_task.path, log_paths[0]["path"])
+                        for log_path in log_paths:
+                            payment_task.path = log_path["path"]
+                            break
                 
                 # Acquire locks for all channels on the path
                 channels = []
@@ -414,6 +432,8 @@ def payment_worker(task_queue, result_queue, lock_manager, stop_event, simulatio
 
                 try:
                     for i in range(len(payment_task.path) - 1):
+
+                        time.sleep(0.0003)
                         u, v = payment_task.path[i], payment_task.path[i + 1]
                         
                         lock_manager.acquire_channel_lock((u, v))
@@ -437,6 +457,7 @@ def payment_worker(task_queue, result_queue, lock_manager, stop_event, simulatio
                     else:
                         # If any channel does not have enough capacity, the payment fails
                         for u, v in rollback_channels:
+                            time.sleep(0.0003)
                             G[u][v]['capacity'] += payment_task.amount
                             G[v][u]['capacity'] -= payment_task.amount
 
@@ -485,7 +506,7 @@ def simulate_threaded_payments_poisson(payment_tasks, probing_task, num_threads=
     
     # Create and start worker threads
     threads = []
-    for _ in range(10):
+    for _ in range(5):
         thread = threading.Thread(
             target=payment_worker,
             args=(task_queue, result_queue, lock_manager, stop_event, simulation_start_time)
@@ -536,7 +557,7 @@ def simulate_threaded_payments_poisson(payment_tasks, probing_task, num_threads=
     if results:
         avg_processing_time = sum(task.processing_time for task in results) / len(results)
         avg_completion_time = sum(task.completion_time for task in results) / len(results)
-        print(f"Average processing time: {avg_processing_time:.2f} seconds")
+        print(f"Average processing time: {avg_processing_time:.8f} seconds")
         print(f"Average completion time: {avg_completion_time:.2f} seconds")
     
     # Print payment results
@@ -584,9 +605,9 @@ def prepare_payment_tasks_poisson(payment_amounts, rate):
 
     # Generate arrival times
     arrival_times = generate_poisson_arrival_times(len(payment_amounts), rate)
-    
+    previous_transactions = []
     for i, (amount, arrival_time) in enumerate(zip(payment_amounts, arrival_times)):
-        sender, receiver = random_sender_receiver(G)
+        sender, receiver = random_sender_receiver(G, previous_transactions)
         
         # Try to find a path in the routing table
         try:
