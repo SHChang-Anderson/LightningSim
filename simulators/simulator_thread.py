@@ -187,6 +187,10 @@ def random_sender_receiver(G, previous_transactions, repeat_ratio=0.86):
     # 86% of the time, select a repeated transaction
     if random.random() < repeat_ratio and previous_transactions:
         sender, receiver = random.choice(previous_transactions)
+        if random.random() < 0.5:
+            temp = sender
+            sender = receiver
+            receiver = temp
     else:
         # Generate a new sender-receiver pair
         sender = random.choice(nodes)
@@ -402,7 +406,6 @@ def payment_worker(task_queue, result_queue, lock_manager, stop_event, simulatio
                         # Sort paths by flow
                         log_paths.sort(key=lambda x: x["flow"], reverse=True)
 
-                        # print( payment_task.path, log_paths[0]["path"])
                         for log_path in log_paths:
                             payment_task.path = log_path["path"]
                             break
@@ -544,6 +547,10 @@ def simulate_threaded_payments_poisson(payment_tasks, probing_task, num_threads=
     for thread in threads:
         thread.join(timeout=1)
     
+    # Join all threads
+    for thread in threads1:
+        thread.join(timeout=1)
+    
     # Get results from the result queue
     results = []
     while not result_queue.empty():
@@ -617,7 +624,9 @@ def prepare_payment_tasks_poisson(payment_amounts, rate):
             # Sort paths by flow
             candidate_paths.sort(key=lambda x: x[1], reverse=True)
             path = candidate_paths[0][0]  # Select the path with the highest flow
-            # path = nx.shortest_path(G, sender, receiver)
+            execute_probing = int(sys.argv[1]) if len(sys.argv) > 1 else 0  # default to 0
+            if execute_probing == 2:
+                path = nx.shortest_path(G, sender, receiver)
                 
             # Create a payment task with arrival time
             task = PaymentTask(i+1, sender, receiver, amount, path, arrival_time)
