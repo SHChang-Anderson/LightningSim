@@ -22,7 +22,7 @@ def bfs(graph, residual_graph, vs, vd):
                 queue.append(neighbor)
     return None
 
-def candidate_path_computation(graph, capacity, base_fee, vs):
+def candidate_path_computation(graph, capacity, base_fee, fee_rate, vs):
     """Compute candidate paths"""
     candidate_paths = {}
     for vd in graph:
@@ -44,11 +44,15 @@ def candidate_path_computation(graph, capacity, base_fee, vs):
             path.append(vs)
             path.reverse()
 
+            # Calculate the minimum capacity (flow) along the path
             Y_p = min(residual_graph[path[i]][path[i + 1]] for i in range(len(path) - 1))
+            
+            # Calculate the total base fee and fee rate
             base_fee_sum = sum(base_fee.get((path[i], path[i + 1]), 0) for i in range(len(path) - 1))
+            fee_rate_sum = sum(fee_rate.get((path[i], path[i + 1]), 0) for i in range(len(path) - 1))
             
             if Y_p > 0:
-                candidate_paths[vd].append((path, Y_p, base_fee_sum))
+                candidate_paths[vd].append((path, Y_p, base_fee_sum, fee_rate_sum))
                 for i in range(len(path) - 1):
                     u, v = path[i], path[i + 1]
                     if v not in residual_graph:
@@ -70,10 +74,11 @@ def candidate_path_computation(graph, capacity, base_fee, vs):
 directory_to_delete = "../routing_table"
 delete_directory(directory_to_delete)
 
-# Initialize graph, capacity, base_fee
+# Initialize graph, capacity, base_fee, and fee_rate
 graph = {}
 capacity = {}
 base_fee = {}
+fee_rate = {}
 
 # Read lightning_network.txt
 with open("lightning_network.txt", "r") as file:
@@ -91,8 +96,12 @@ with open("lightning_network.txt", "r") as file:
             print(f"Parsing error: {line.strip()}")
             continue
         
-        fee = 1  # Assume base fee is 1, can be adjusted
-        
+        # Parse fee and fee rate
+        fee_match = re.search(r"'fee': np\.float64\(([\d.]+)\)", line)
+        rate_match = re.search(r"'rate': np\.float64\(([\d.]+)\)", line)
+        fee = float(fee_match.group(1)) if fee_match else 1.0  # Default fee is 1.0
+        rate = float(rate_match.group(1)) if rate_match else 0.00022  # Default rate is 0.00022
+
         # Build the graph structure
         if node1 not in graph:
             graph[node1] = []
@@ -107,9 +116,11 @@ with open("lightning_network.txt", "r") as file:
         capacity[(node1, node2)] = capacity_value
         capacity[(node2, node1)] = capacity_value
 
-        # Set base fee
+        # Set base fee and fee rate
         base_fee[(node1, node2)] = fee
         base_fee[(node2, node1)] = fee
+        fee_rate[(node1, node2)] = rate
+        fee_rate[(node2, node1)] = rate
 
 # Create the routing table
 folder_name = "../routing_table"
@@ -117,12 +128,12 @@ os.makedirs(folder_name, exist_ok=True)
 
 for i in graph:
     vs = i
-    all_paths = candidate_path_computation(graph, capacity, base_fee, vs)
+    all_paths = candidate_path_computation(graph, capacity, base_fee, fee_rate, vs)
     with open(f"{folder_name}/node{vs}", "w") as file:
         for vd, paths in all_paths.items():
             file.write(f"Paths from node{vs} to node{vd}:\n")
-            for path, flow, fee in paths:
+            for path, flow, base_fee_sum, fee_rate_sum in paths:
                 path_str = ' '.join(f"node{n}" for n in path)
-                file.write(f"  Path: {path_str}, Flow: {flow}, Fee: {fee}\n")
+                file.write(f"  Path: {path_str}, Flow: {flow}, Base Fee Sum: {base_fee_sum:.6f}, Fee Rate Sum: {fee_rate_sum:.6f}\n")
 
 print("Routing table has been created!")
