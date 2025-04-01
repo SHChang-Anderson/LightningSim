@@ -205,7 +205,19 @@ def random_sender_receiver(G, previous_transactions, repeat_ratio=0.86):
 
 #  Payment task class
 class PaymentTask:
-    def __init__(self, payment_id, sender, receiver, amount, path, arrival_time):
+    def __init__(self, payment_id, sender, receiver, amount, path, arrival_time, fee=0):
+        """
+        Initialize a PaymentTask object.
+
+        Parameters:
+        - payment_id (int): Unique ID for the payment.
+        - sender (int): Sender node ID.
+        - receiver (int): Receiver node ID.
+        - amount (int): Payment amount in satoshis.
+        - path (list): Path for the payment.
+        - arrival_time (float): Time when the payment arrives.
+        - fee (float): Total fee for the payment (default: 0).
+        """
         self.payment_id = payment_id
         self.sender = sender
         self.receiver = receiver
@@ -216,10 +228,16 @@ class PaymentTask:
         self.completion_time = 0  # Time when the payment completes
         self.success = False
         self.message = ""
-        
+        self.fee = fee  # Total fee for the payment
+
     def __str__(self):
+        """
+        String representation of the PaymentTask object.
+        """
         status = "Success" if self.success else "Failed"
-        return f"Payment {self.payment_id}: {self.amount} satoshis from {self.sender} to {self.receiver}, Status: {status}, Arrival: {self.arrival_time:.2f}s, Completion: {self.completion_time:.2f}s, Processing: {self.processing_time:.2f}s, Path: {self.path}"
+        return (f"Payment {self.payment_id}: {self.amount} satoshis from {self.sender} to {self.receiver}, "
+                f"Status: {status}, Arrival: {self.arrival_time:.2f}s, Completion: {self.completion_time:.2f}s, "
+                f"Processing: {self.processing_time:.2f}s, Fee: {self.fee:.6f}, Path: {self.path}")
 
     # For compatibility with PriorityQueue
     def __lt__(self, other):
@@ -434,6 +452,7 @@ def payment_worker(task_queue, result_queue, lock_manager, stop_event, simulatio
                 rollback_channels = []  # record channels that need to be rolled back
 
                 try:
+                    total_fee = 0
                     for i in range(len(payment_task.path) - 1):
 
                         time.sleep(0.0003)
@@ -452,12 +471,15 @@ def payment_worker(task_queue, result_queue, lock_manager, stop_event, simulatio
                         G[u][v]['capacity'] -= payment_task.amount
                         G[v][u]['capacity'] += payment_task.amount
                         rollback_channels.append((u, v))  # record the channel that has been deducted
+                        total_fee += (G[u][v]['fee'] + G[u][v]['rate'] * payment_task.amount)  # Add the fees for both directions
 
                     # If all channels have enough capacity, the payment is successful
                     if has_capacity:
                         payment_task.success = True
+                        payment_task.fee = total_fee
                         payment_task.message = "Payment successful"
                     else:
+                        payment_task.fee = 0
                         # If any channel does not have enough capacity, the payment fails
                         for u, v in rollback_channels:
                             time.sleep(0.0003)
@@ -559,6 +581,7 @@ def simulate_threaded_payments_poisson(payment_tasks, probing_task, num_threads=
     # Count successful payments
     successful_payments = sum(1 for task in results if task.success)
     total_payments = len(results)
+    avg_fee = sum(task.fee for task in results) / successful_payments if total_payments > 0 else 0
     
     # Calculate statistics
     if results:
@@ -572,7 +595,7 @@ def simulate_threaded_payments_poisson(payment_tasks, probing_task, num_threads=
     for task in sorted(results, key=lambda x: x.payment_id):
         print(task)
     
-    return successful_payments, total_payments, results
+    return successful_payments, total_payments, results, avg_fee
 
 # Generate payment arrival times using Poisson process
 def generate_poisson_arrival_times(num_payments, rate):
@@ -718,13 +741,22 @@ if __name__ == "__main__":
                 continue
             u, v, attr_str = parts
             u, v = int(u), int(v)
-            match = re.search(r"np\.int64\((\d+)\)", attr_str)
-            if match:
-                capacity = int(match.group(1))
-                attrs = {'capacity': capacity}
-                G.add_edge(u, v, **attrs)
-            else:
-                print(f"Skipping incorrectly formatted line: {line.strip()}")  
+
+            # Parse capacity
+            capacity_match = re.search(r"np\.int64\((\d+)\)", attr_str)
+            capacity = int(capacity_match.group(1)) if capacity_match else 0
+
+            # Parse fee
+            fee_match = re.search(r"'fee': np\.float64\(([\d.]+)\)", attr_str)
+            fee = float(fee_match.group(1)) if fee_match else 1.0  # Default fee is 1.0
+
+            # Parse fee rate
+            rate_match = re.search(r"'rate': np\.float64\(([\d.]+)\)", attr_str)
+            rate = float(rate_match.group(1)) if rate_match else 0.00022  # Default rate is 0.00022
+
+            # Add edge with attributes
+            attrs = {'capacity': capacity, 'fee': fee, 'rate': rate}
+            G.add_edge(u, v, **attrs)
 
     # Output statistics  
     print(f"Number of nodes: {G.number_of_nodes()}")  
@@ -747,7 +779,7 @@ if __name__ == "__main__":
     start_time = time.time()
     
     # Simulate threaded payments
-    successful_payments, total_payments, results = simulate_threaded_payments_poisson(payment_tasks, probing_task, num_threads=20)
+    successful_payments, total_payments, results, avg_fee = simulate_threaded_payments_poisson(payment_tasks, probing_task, num_threads=20)
     
     # Calculate and print the success rate
     end_time = time.time()
@@ -758,6 +790,7 @@ if __name__ == "__main__":
     success_rate = (successful_payments / total_payments) * 100
     print(f"\nSuccess Rate: {success_rate:.2f}%")
     print(f"Successful Payments: {successful_payments}/{total_payments}")
+    print(f"Average Fee: {avg_fee:.6f} satoshis")
     print(f"Execution Time: {end_time - start_time:.2f} seconds")
     # visualize_network(G)
     # plot_payment_statistics(results)
