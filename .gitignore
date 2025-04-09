@@ -6,3 +6,4 @@ log_table/*
 simulators/success_rate_comparison.png
 simulators/Exe.png
 simulators/simulation_output.log
+simulators/__pycache__/

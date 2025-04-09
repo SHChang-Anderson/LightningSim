@@ -505,6 +505,8 @@ def payment_worker(task_queue, result_queue, lock_manager, stop_event, simulatio
 
                 try:
                     total_fee = 0
+                    alpha = 0.5  # EWMA weight for channel capacity
+
                     for i in range(len(payment_task.path) - 1):
 
                         time.sleep(0.0003)
@@ -523,7 +525,26 @@ def payment_worker(task_queue, result_queue, lock_manager, stop_event, simulatio
                         G[u][v]['capacity'] -= payment_task.amount
                         G[v][u]['capacity'] += payment_task.amount
                         rollback_channels.append((u, v))  # record the channel that has been deducted
-                        total_fee += (G[u][v]['fee'] + G[u][v]['rate'] * payment_task.amount)  # Add the fees for both directions
+                        
+                                # Update the usage frequency of the channel using EWMA
+                        now = time.time()
+                        if G[u][v]['last_used'] is not None:
+                            # Calculate the time difference since the last usage
+                            time_diff = now - G[u][v]['last_used']
+                            if time_diff > 0:
+                                # Apply EWMA formula
+                                previous_frequency = G[u][v].get('usage_frequency', 0)
+                                current_frequency = 1 / time_diff
+                                G[u][v]['usage_frequency'] = alpha * current_frequency + (1 - alpha) * previous_frequency
+                        else:
+                            # If this is the first usage, set the frequency to a default value
+                            G[u][v]['usage_frequency'] = 1
+                        
+                        # Update the last used timestamp
+                        G[u][v]['last_used'] = now
+                        
+                        # Add the fees for both directions
+                        total_fee += (G[u][v]['fee'] + G[u][v]['rate'] * payment_task.amount)
 
                     # If all channels have enough capacity, the payment is successful
                     if has_capacity:
@@ -807,7 +828,14 @@ def main():
             rate = float(rate_match.group(1)) if rate_match else 0.00022  # Default rate is 0.00022
 
             # Add edge with attributes
-            attrs = {'capacity': capacity, 'fee': fee, 'rate': rate}
+            attrs = {
+                'capacity': capacity,
+                'fee': fee,
+                'rate': rate,
+                'usage': 0,
+                'last_used': None,  # Initialize to None
+                'usage_frequency': 0  # Initialize to 0
+            }
             G.add_edge(u, v, **attrs)
 
     # Output statistics  
@@ -856,7 +884,7 @@ def main():
     # visualize_network(G)
     # plot_payment_statistics(results)
 
-
+'''
 import sys
 sys.argv = [
     "simulator_thread.py",  # Script name
@@ -869,3 +897,4 @@ print(sys.argv[1])
 print(sys.argv[2])
 # Call the main function of simulator_thread.py
 main()
+'''
