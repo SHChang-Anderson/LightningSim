@@ -353,6 +353,51 @@ def record_probe_results(node_id, probe_tasks, simulation_start_time):
     update_log_table(node_id, destination, path, flow, fee, timestamp)
     update_log_table(node_id, path[0], path[::-1], flow, fee, timestamp)
 
+def get_sorted_candidate_paths(payment_task, alpha=1.0, beta=1.0, epsilon=1.0):
+    """
+    Get sorted candidate paths based on the composite score formula.
+
+    Parameters:
+    - payment_task (PaymentTask): The payment task containing sender, receiver, and amount.
+    - alpha (float): Weight for Total Channel Capacity.
+    - beta (float): Weight for Base Fee.
+    - epsilon (float): Weight for Channel Usage Frequency.
+
+    Returns:
+    - List of paths sorted by their composite score in descending order.
+    """
+    # Read candidate paths from the routing table
+    candidate_paths = get_paths_from_routing_table(
+        f"../routing_table/node{payment_task.sender}",
+        payment_task.sender,
+        payment_task.receiver
+    )
+
+    # Calculate scores for each valid path
+    scored_paths = []
+    for path, flow in candidate_paths:
+        total_channel_capacity = flow
+        base_fee = sum(G[path[i]][path[i + 1]]['fee'] for i in range(len(path) - 1))
+        channel_usage_frequency = sum(
+            G[path[i]][path[i + 1]].get('usage', 0) for i in range(len(path) - 1)
+        )
+
+        # Calculate composite score
+        score = (
+            alpha * total_channel_capacity -
+            beta * base_fee -
+            epsilon * (channel_usage_frequency * payment_task.amount)
+        )
+        # print(score)
+        # Append path, flow, and score to the list
+        scored_paths.append((path, flow, score))
+
+    # Sort paths by score in descending order
+    scored_paths.sort(key=lambda x: x[2], reverse=True)
+
+    # Return only the paths sorted by score
+    return [path for path, _, _ in scored_paths]
+
 def probing_worker(stop_event, simulation_start_time):
     """
     Worker function for probing the network.
@@ -445,6 +490,13 @@ def payment_worker(task_queue, result_queue, lock_manager, stop_event, simulatio
                         for log_path in log_paths:
                             payment_task.path = log_path["path"]
                             break
+
+                if execute_probing == 3:
+                    # Get the sorted candidate paths
+                    candidate_paths = get_sorted_candidate_paths(payment_task)
+                    # Select the best path
+                    if candidate_paths:
+                        payment_task.path = candidate_paths[0]
                 
                 # Acquire locks for all channels on the path
                 channels = []
@@ -728,7 +780,7 @@ def plot_payment_statistics(results):
     plt.tight_layout()
     plt.show()
 
-if __name__ == "__main__":
+def main():
     file_path = "../creditcard.csv"  # CSV file path
 
     clear_log_table() # Clear the log table
@@ -786,11 +838,34 @@ if __name__ == "__main__":
 
     clear_log_table() # Clear the log table
     
+    # Redirect print output to a log file
+    log_file = open("simulation_output.log", "w")
+    original_stdout = sys.stdout # Save a reference to the original standard output
+    sys.stdout = log_file
+
     # Print the results
     success_rate = (successful_payments / total_payments) * 100
     print(f"\nSuccess Rate: {success_rate:.2f}%")
     print(f"Successful Payments: {successful_payments}/{total_payments}")
     print(f"Average Fee: {avg_fee:.6f} satoshis")
     print(f"Execution Time: {end_time - start_time:.2f} seconds")
+
+    # Close the log file
+    log_file.close()
+    sys.stdout = original_stdout # Reset standard output to original
     # visualize_network(G)
     # plot_payment_statistics(results)
+
+
+import sys
+sys.argv = [
+    "simulator_thread.py",  # Script name
+    str(3),   # Probing mode
+    str(1000),      # Number of payments
+    str(1000)   # Payments per second
+]
+print(sys.argv[0])
+print(sys.argv[1])
+print(sys.argv[2])
+# Call the main function of simulator_thread.py
+main()
