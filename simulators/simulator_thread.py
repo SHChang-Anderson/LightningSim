@@ -644,13 +644,15 @@ def payment_worker(task_queue, result_queue, lock_manager, stop_event, simulatio
                         if G[u][v]['capacity'] < payment_task.amount:
                             has_capacity = False
                             payment_task.message = f"Channel {u}-{v} has insufficient capacity: {G[u][v]['capacity']} < {payment_task.amount}"
+                            lock_manager.release_channel_lock((u, v))
                             break
                         
                         # temporarily deduct the amount from the channel
                         G[u][v]['capacity'] -= payment_task.amount
                         G[v][u]['capacity'] += payment_task.amount
                         rollback_channels.append((u, v))  # record the channel that has been deducted
-                        
+                        lock_manager.release_channel_lock((u, v))
+
                         # Update the usage frequency of the channel using EWMA
                         now = time.time()
                         if G[u][v]['last_used'] is not None:
@@ -710,14 +712,19 @@ def payment_worker(task_queue, result_queue, lock_manager, stop_event, simulatio
                         payment_task.fee = 0
                         # If any channel does not have enough capacity, the payment fails
                         for u, v in rollback_channels:
+                            lock_manager.acquire_channel_lock((u, v))
                             time.sleep(0.0003)
                             G[u][v]['capacity'] += payment_task.amount
                             G[v][u]['capacity'] -= payment_task.amount
+                            lock_manager.release_channel_lock((u, v))
 
                 finally:
                     # Release locks for all channels on the path
+                    '''
                     for channel in channels:
                         lock_manager.release_channel_lock(channel)
+                    '''
+                    
                 
             except Exception as e:
                 print(f"Error processing payment: {str(e)}")    
@@ -1051,7 +1058,6 @@ def main():
     sys.stdout = original_stdout # Reset standard output to original
     # visualize_network(G)
     # plot_payment_statistics(results)
-
 '''
 import sys
 sys.argv = [
@@ -1063,6 +1069,7 @@ sys.argv = [
 print(sys.argv[0])
 print(sys.argv[1])
 print(sys.argv[2])
+'''
 # Call the main function of simulator_thread.py
 main()
-'''
+

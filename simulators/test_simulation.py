@@ -16,17 +16,19 @@ def run_simulation(num_payments, payments_per_sec, execute_probing):
     - execution_time (float): The average execution time per payment.
     """
     try:
-        # Simulate command-line arguments
-        import sys
-        sys.argv = [
-            "simulator_thread.py",  # Script name
-            str(execute_probing),   # Probing mode
-            str(num_payments),      # Number of payments
-            str(payments_per_sec)   # Payments per second
+        print(f"Running simulation with {num_payments} payments, {payments_per_sec} payments/sec, execute_probing={execute_probing}...")    
+        # create a timeout for the subprocess
+
+        timeout = 120  # seconds
+        cmd = [
+            "python3", "simulator_thread.py",
+            str(execute_probing),
+            str(num_payments),
+            str(payments_per_sec)
         ]
 
-        # Call the main function of simulator_thread.py
-        simulator_main()
+        # Run the command and capture the output
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
 
         # Parse the output from the global variables or logs
         # Assuming the main function prints the success rate and execution time
@@ -47,9 +49,12 @@ def run_simulation(num_payments, payments_per_sec, execute_probing):
         
         return success_rate, execution_time, avg_fee
 
+    except subprocess.TimeoutExpired:
+        print(f"Timeout: The simulation took too long to complete.")
+        return None, None, None
     except Exception as e:
-        print(f"Error running simulation: {e}")
-        return None, None
+        print(f"Simulation failed: {e}")
+        return None, None, None
 
 def test_simulation():
     """
