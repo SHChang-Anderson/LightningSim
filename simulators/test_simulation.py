@@ -55,7 +55,7 @@ def test_simulation():
     """
     Test the simulator_thread.py script with different payment counts and probing settings.
     """
-    payment_counts = range(1000, 9000, 3000)  # From 1000 to 9000 payments, step 1000
+    payment_counts = range(1000, 6000, 1000)  # From 1000 to 9000 payments, step 1000
     success_rates_probing_0 = []
     success_rates_probing_1 = []
     success_rates_probing_2 = []

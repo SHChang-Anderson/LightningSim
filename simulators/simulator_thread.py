@@ -22,6 +22,125 @@ log_table_locks_lock = threading.Lock()  # Lock used to protect log_table_locks
 # Create a probing task queue
 probing_task_queue = queue.PriorityQueue()
 
+# store transaction timestamps
+transaction_timestamps = {}
+
+# Trust pairs for nodes
+trust_pairs = {}
+
+def add_trust_pair(trust_pairs, node1, node2):
+    """
+    Add a trust relationship between two nodes.
+
+    Parameters:
+    - trust_pairs (dict): The dictionary storing trust relationships.
+    - node1 (int): The first node.
+    - node2 (int): The second node.
+    """
+    if node1 not in trust_pairs:
+        trust_pairs[node1] = set()
+    trust_pairs[node1].add(node2)
+
+def remove_trust_pair(trust_pairs, node1, node2):
+    """
+    Remove a trust relationship between two nodes.
+
+    Parameters:
+    - trust_pairs (dict): The dictionary storing trust relationships.
+    - node1 (int): The first node.
+    - node2 (int): The second node.
+    """
+    if node1 in trust_pairs and node2 in trust_pairs[node1]:
+        trust_pairs[node1].remove(node2)
+        if not trust_pairs[node1]: 
+            del trust_pairs[node1]
+
+def is_trusted(trust_pairs, node1, node2):
+    """
+    Check if node1 trusts node2.
+
+    Parameters:
+    - trust_pairs (dict): The dictionary storing trust relationships.
+    - node1 (int): The first node.
+    - node2 (int): The second node.
+
+    Returns:
+    - bool: True if node1 trusts node2, False otherwise.
+    """
+    return node1 in trust_pairs and node2 in trust_pairs[node1]
+
+def query_trusted_node(path):
+    """
+    Query a trusted node for channel information along a given path.
+
+    Parameters:
+    - trusted_node (int): The ID of the trusted node.
+    - path (list): The path to query.
+
+    Returns:
+    - dict: A dictionary containing channel information (capacity and usage_frequency).
+    - int: The minimum capacity along the path.
+    - float: The maximum usage frequency along the path.
+    """
+
+    channel_info = {}
+    min_capacity = float('inf')  # Initialize to a very large value
+    max_usage_frequency = float('-inf')  # Initialize to a very small value
+
+    for i in range(0, len(path) - 1):
+        u, v = path[i], path[i + 1]
+        if i == 0 or is_trusted(trust_pairs, path[0], v) or is_trusted(trust_pairs, path[0], u) :
+            capacity = G[u][v]['capacity']
+            usage_frequency = G[u][v].get('usage_frequency', 0)
+
+            # Update min_capacity and max_usage_frequency
+            min_capacity = min(min_capacity, capacity)
+            max_usage_frequency = max(max_usage_frequency, usage_frequency)
+
+            # Add channel information to the result
+            channel_info[(u, v)] = {
+                'capacity': capacity,
+                'usage_frequency': usage_frequency
+            }
+
+    # If no trusted channels are found, set min_capacity and max_usage_frequency to None
+    if not channel_info:
+        min_capacity = float('inf')
+        max_usage_frequency = 0
+
+    return channel_info, min_capacity, max_usage_frequency
+
+
+def update_trust_scores_thread(G, trust_pairs, stop_event, update_interval=1):
+    """
+    Thread function to periodically update trust scores based on recent transactions.
+
+    Parameters:
+    - G (nx.Graph): The network graph.
+    - trust_pairs (dict): The dictionary storing trust relationships.
+    - stop_event (threading.Event): Event to signal the thread to stop.
+    - transaction_window (int): The time window (in seconds) to consider recent transactions.
+    - update_interval (int): The interval (in seconds) between updates.
+    """
+    while not stop_event.is_set():
+        try:
+            # Update trust scores based on recent transactions
+            for node in G.nodes():
+                for neighbor in G.neighbors(node):
+                    # Update trust relationship based on recent transactions
+                    if node in transaction_timestamps and neighbor in transaction_timestamps[node]:
+                        if transaction_timestamps[node][neighbor]:
+                            add_trust_pair(trust_pairs, node, neighbor)
+                        else:
+                            remove_trust_pair(trust_pairs, node, neighbor)
+                    else:
+                        remove_trust_pair(trust_pairs, node, neighbor)  # if no transactions, remove trust
+
+            # Sleep for the update interval
+            time.sleep(update_interval)
+        except Exception as e:
+            print(f"Error in update_trust_scores_thread: {str(e)}")
+
 def clear_log_table():
     """
     Clear the global log_table and all associated locks.
@@ -159,11 +278,15 @@ def get_paths_from_routing_table(filename, source, destination):
                 parts = line.split(", ")
                 path_str = parts[0].split(":")[1].strip()  # Extract path
                 flow_str = parts[1].split(":")[1].strip()  # Extract flow
+                Base_fee_str = parts[2].split(":")[1].strip()  # Extract base fee
+                Fee_rate_str = parts[3].split(":")[1].strip()  # Extract fee rate
                 
                 #  Convert path to list of integers
                 path = [int(node.replace("node", "")) for node in path_str.split()]
-                flow = int(flow_str)
-                paths.append((path, flow))
+                flow = float(flow_str)
+                Base_fee = float(Base_fee_str)
+                Fee_rate = float(Fee_rate_str)
+                paths.append((path, flow, Base_fee, Fee_rate))
 
     return paths
 
@@ -353,7 +476,7 @@ def record_probe_results(node_id, probe_tasks, simulation_start_time):
     update_log_table(node_id, destination, path, flow, fee, timestamp)
     update_log_table(node_id, path[0], path[::-1], flow, fee, timestamp)
 
-def get_sorted_candidate_paths(payment_task, alpha=1.0, beta=1.0, epsilon=1.0):
+def get_sorted_candidate_paths(payment_task, alpha=1.0, beta=1.0, epsilon=1.0, gamma=1.0):
     """
     Get sorted candidate paths based on the composite score formula.
 
@@ -375,18 +498,20 @@ def get_sorted_candidate_paths(payment_task, alpha=1.0, beta=1.0, epsilon=1.0):
 
     # Calculate scores for each valid path
     scored_paths = []
-    for path, flow in candidate_paths:
+    for path, flow, Base_fee, Fee_rate in candidate_paths:
         total_channel_capacity = flow
-        base_fee = sum(G[path[i]][path[i + 1]]['fee'] for i in range(len(path) - 1))
-        channel_usage_frequency = sum(
-            G[path[i]][path[i + 1]].get('usage', 0) for i in range(len(path) - 1)
-        )
+        base_fee = Base_fee
+        fee_rate = Fee_rate
+        channel_info, min_capacity, max_usage_frequency = query_trusted_node(path)
+        
+        total_channel_capacity = min(flow, min_capacity)
 
         # Calculate composite score
         score = (
             alpha * total_channel_capacity -
             beta * base_fee -
-            epsilon * (channel_usage_frequency * payment_task.amount)
+            epsilon * (fee_rate * payment_task.amount) - 
+            gamma * max_usage_frequency
         )
         # print(score)
         # Append path, flow, and score to the list
@@ -526,7 +651,7 @@ def payment_worker(task_queue, result_queue, lock_manager, stop_event, simulatio
                         G[v][u]['capacity'] += payment_task.amount
                         rollback_channels.append((u, v))  # record the channel that has been deducted
                         
-                                # Update the usage frequency of the channel using EWMA
+                        # Update the usage frequency of the channel using EWMA
                         now = time.time()
                         if G[u][v]['last_used'] is not None:
                             # Calculate the time difference since the last usage
@@ -551,6 +676,36 @@ def payment_worker(task_queue, result_queue, lock_manager, stop_event, simulatio
                         payment_task.success = True
                         payment_task.fee = total_fee
                         payment_task.message = "Payment successful"
+
+                        # Record the transaction timestamp for each channel in the path
+                        timestamp = time.time()
+                        
+                        u, v = payment_task.path[0], payment_task.path[-1]
+                        if u not in transaction_timestamps:
+                            transaction_timestamps[u] = {}
+                        if v not in transaction_timestamps[u]:
+                            transaction_timestamps[u][v] = []
+                        
+                        # Append the timestamp
+                        transaction_timestamps[u][v].append(timestamp)
+
+                        # Limit the number of stored timestamps to avoid memory issues
+                        if len(transaction_timestamps[u][v]) > 100:
+                            transaction_timestamps[u][v].pop(0)
+                        
+                        v, u = payment_task.path[0], payment_task.path[-1]
+                        if u not in transaction_timestamps:
+                            transaction_timestamps[u] = {}
+                        if v not in transaction_timestamps[u]:
+                            transaction_timestamps[u][v] = []
+                        
+                        # Append the timestamp
+                        transaction_timestamps[u][v].append(timestamp)
+
+                        # Limit the number of stored timestamps to avoid memory issues
+                        if len(transaction_timestamps[u][v]) > 100:
+                            transaction_timestamps[u][v].pop(0)
+                
                     else:
                         payment_task.fee = 0
                         # If any channel does not have enough capacity, the payment fails
@@ -834,7 +989,7 @@ def main():
                 'rate': rate,
                 'usage': 0,
                 'last_used': None,  # Initialize to None
-                'usage_frequency': 0  # Initialize to 0
+                'usage_frequency': 0,  # Initialize to 0
             }
             G.add_edge(u, v, **attrs)
 
@@ -855,14 +1010,27 @@ def main():
     
     print(f"Prepared {len(payment_tasks)} payment tasks and {len(probing_task)} probing tasks.")
     
-    # Visualize the network
-    start_time = time.time()
-    
+    # Create a stop event for the trust score update thread
+    stop_event = threading.Event()
+
+    # Start the trust score update thread
+    trust_thread = threading.Thread(
+        target=update_trust_scores_thread,
+        args=(G, trust_pairs, stop_event, 1)  # update_interval=1s
+    )
+    trust_thread.daemon = True
+    trust_thread.start()
+
     # Simulate threaded payments
-    successful_payments, total_payments, results, avg_fee = simulate_threaded_payments_poisson(payment_tasks, probing_task, num_threads=20)
-    
-    # Calculate and print the success rate
+    start_time = time.time()
+    successful_payments, total_payments, results, avg_fee = simulate_threaded_payments_poisson(
+        payment_tasks, probing_task, num_threads=20
+    )
     end_time = time.time()
+
+    # Stop the trust score update thread
+    stop_event.set()
+    trust_thread.join()
 
     clear_log_table() # Clear the log table
     
