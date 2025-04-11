@@ -19,7 +19,7 @@ def run_simulation(num_payments, payments_per_sec, execute_probing):
         print(f"Running simulation with {num_payments} payments, {payments_per_sec} payments/sec, execute_probing={execute_probing}...")    
         # create a timeout for the subprocess
 
-        timeout = 120  # seconds
+        timeout = 500  # seconds
         cmd = [
             "python3", "simulator_thread.py",
             str(execute_probing),
@@ -60,7 +60,7 @@ def test_simulation():
     """
     Test the simulator_thread.py script with different payment counts and probing settings.
     """
-    payment_counts = range(1000, 6000, 1000)  # From 1000 to 9000 payments, step 1000
+    payment_counts = range(1000, 10000, 1000)  # From 1000 to 9000 payments, step 1000
     success_rates_probing_0 = []
     success_rates_probing_1 = []
     success_rates_probing_2 = []
@@ -76,7 +76,7 @@ def test_simulation():
     # Run simulations for execute_probing = 0
     print("Running simulations with execute_probing = 0...")
     for num_payments in payment_counts:
-        success_rate, execution_time, avg_fee = run_simulation(num_payments, 5000, 0)
+        success_rate, execution_time, avg_fee = run_simulation(num_payments, 1000, 0)
         if success_rate is not None:
             success_rates_probing_0.append(success_rate)
             exe_time_probing_0.append(execution_time)
@@ -86,11 +86,11 @@ def test_simulation():
             success_rates_probing_0.append(0)  # Default to 0 if simulation fails
             exe_time_probing_0.append(0)
             avg_fee_0.append(0)
-
+    '''
     # Run simulations for execute_probing = 1
     print("\nRunning simulations with execute_probing = 1...")
     for num_payments in payment_counts:
-        success_rate, execution_time, avg_fee = run_simulation(num_payments, 5000, 1)
+        success_rate, execution_time, avg_fee = run_simulation(num_payments, 1000, 1)
         if success_rate is not None:
             success_rates_probing_1.append(success_rate)
             exe_time_probing_1.append(execution_time)
@@ -100,11 +100,11 @@ def test_simulation():
             success_rates_probing_1.append(0)  # Default to 0 if simulation fails
             exe_time_probing_1.append(0)
             avg_fee_1.append(0)
-
+    '''
     # Run simulations for execute_probing = 3
     print("\nRunning simulations with execute_probing = 3...")
     for num_payments in payment_counts:
-        success_rate, execution_time, avg_fee = run_simulation(num_payments, 5000, 3)
+        success_rate, execution_time, avg_fee = run_simulation(num_payments, 1000, 3)
         if success_rate is not None:
             success_rates_probing_2.append(success_rate)
             exe_time_probing_2.append(execution_time)
@@ -118,7 +118,7 @@ def test_simulation():
     # Plot the results
     plt.figure(figsize=(10, 6))
     plt.plot(payment_counts, success_rates_probing_0, label="Probing=0", marker="o")
-    plt.plot(payment_counts, success_rates_probing_1, label="Probing=1", marker="o")
+    # plt.plot(payment_counts, success_rates_probing_1, label="Probing=1", marker="o")
     plt.plot(payment_counts, success_rates_probing_2, label="Use cal", marker="o")
     plt.xlabel("Number of Payments")
     plt.ylabel("Success Rate (%)")
@@ -128,11 +128,11 @@ def test_simulation():
     plt.tight_layout()
     plt.savefig("success_rate_comparison.png")  # Save the plot as an image
     plt.show()
-
+    
     # Plot the results
     plt.figure(figsize=(10, 6))
     plt.plot(payment_counts, exe_time_probing_0, label="Probing=0", marker="o")
-    plt.plot(payment_counts, exe_time_probing_1, label="Probing=1", marker="o")
+    # plt.plot(payment_counts, exe_time_probing_1, label="Probing=1", marker="o")
     plt.plot(payment_counts, exe_time_probing_2, label="Use cal", marker="o")
     plt.xlabel("Number of Payments")
     plt.ylabel("Execution Time (s) / Payment")
@@ -146,7 +146,7 @@ def test_simulation():
     # Plot the results
     plt.figure(figsize=(10, 6))
     plt.plot(payment_counts, avg_fee_0, label="Probing=0", marker="o")
-    plt.plot(payment_counts, avg_fee_1, label="Probing=1", marker="o")
+    # plt.plot(payment_counts, avg_fee_1, label="Probing=1", marker="o")
     plt.plot(payment_counts, avg_fee_2, label="Use cal", marker="o")
     plt.xlabel("Number of Payments")
     plt.ylabel("Average Fee (satoshis)")

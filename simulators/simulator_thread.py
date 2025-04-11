@@ -85,30 +85,30 @@ def query_trusted_node(path):
 
     channel_info = {}
     min_capacity = float('inf')  # Initialize to a very large value
-    max_usage_frequency = float('-inf')  # Initialize to a very small value
+    max_usage_frequency_diff = float('-inf')  # Initialize to a very small value
 
     for i in range(0, len(path) - 1):
         u, v = path[i], path[i + 1]
         if i == 0 or is_trusted(trust_pairs, path[0], v) or is_trusted(trust_pairs, path[0], u) :
             capacity = G[u][v]['capacity']
-            usage_frequency = G[u][v].get('usage_frequency', 0)
+            usage_frequency_diff = G[u][v].get('usage_frequency', 0) - G[v][u].get('usage_frequency', 0)
 
             # Update min_capacity and max_usage_frequency
             min_capacity = min(min_capacity, capacity)
-            max_usage_frequency = max(max_usage_frequency, usage_frequency)
+            max_usage_frequency_diff = max(max_usage_frequency_diff, usage_frequency_diff)
 
             # Add channel information to the result
             channel_info[(u, v)] = {
                 'capacity': capacity,
-                'usage_frequency': usage_frequency
+                'usage_frequency': usage_frequency_diff
             }
 
     # If no trusted channels are found, set min_capacity and max_usage_frequency to None
     if not channel_info:
         min_capacity = float('inf')
-        max_usage_frequency = 0
+        max_usage_frequency_diff = 0
 
-    return channel_info, min_capacity, max_usage_frequency
+    return channel_info, min_capacity, max_usage_frequency_diff
 
 
 def update_trust_scores_thread(G, trust_pairs, stop_event, update_interval=1):
@@ -291,7 +291,7 @@ def get_paths_from_routing_table(filename, source, destination):
     return paths
 
 # Randomly select a sender and receiver
-def random_sender_receiver(G, previous_transactions, repeat_ratio=0.86):
+def random_sender_receiver(G, previous_transactions, repeat_ratio=0.75):
     """
     Select a sender and receiver pair with a bias towards repeated transactions
     and clustered transaction pairs.
@@ -502,7 +502,7 @@ def get_sorted_candidate_paths(payment_task, alpha=1.0, beta=1.0, epsilon=1.0, g
         total_channel_capacity = flow
         base_fee = Base_fee
         fee_rate = Fee_rate
-        channel_info, min_capacity, max_usage_frequency = query_trusted_node(path)
+        channel_info, min_capacity, max_usage_frequency_diff = query_trusted_node(path)
         
         total_channel_capacity = min(flow, min_capacity)
 
@@ -511,7 +511,7 @@ def get_sorted_candidate_paths(payment_task, alpha=1.0, beta=1.0, epsilon=1.0, g
             alpha * total_channel_capacity -
             beta * base_fee -
             epsilon * (fee_rate * payment_task.amount) - 
-            gamma * max_usage_frequency
+            gamma * max_usage_frequency_diff
         )
         # print(score)
         # Append path, flow, and score to the list
