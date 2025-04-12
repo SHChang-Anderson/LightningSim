@@ -476,7 +476,7 @@ def record_probe_results(node_id, probe_tasks, simulation_start_time):
     update_log_table(node_id, destination, path, flow, fee, timestamp)
     update_log_table(node_id, path[0], path[::-1], flow, fee, timestamp)
 
-def get_sorted_candidate_paths(payment_task, alpha=1.0, beta=1.0, epsilon=1.0, gamma=1.0):
+def get_sorted_candidate_paths(payment_task, alpha=float(sys.argv[4]), beta=float(sys.argv[5]), gamma=float(sys.argv[6])):
     """
     Get sorted candidate paths based on the composite score formula.
 
@@ -495,29 +495,52 @@ def get_sorted_candidate_paths(payment_task, alpha=1.0, beta=1.0, epsilon=1.0, g
         payment_task.sender,
         payment_task.receiver
     )
+    # initialize min and max values
+    min_capacity, max_capacity = float('inf'), float('-inf')
+    min_fee, max_fee = float('inf'), float('-inf')
+    min_usage, max_usage = float('inf'), float('-inf')
 
-    # Calculate scores for each valid path
+    # compute min and max values for normalization
+    for path, flow, Base_fee, Fee_rate in candidate_paths:
+        total_channel_capacity = flow
+        base_fee = Base_fee
+        fee_rate = Fee_rate
+        channel_info, min_capacity_path, max_usage_frequency_diff = query_trusted_node(path)
+
+        # update min and max values
+        min_capacity = min(min_capacity, total_channel_capacity, min_capacity_path)
+        max_capacity = max(max_capacity, total_channel_capacity, min_capacity_path)
+
+        total_fee = base_fee + (fee_rate * payment_task.amount)
+        min_fee = min(min_fee, total_fee)
+        max_fee = max(max_fee, total_fee)
+
+        min_usage = min(min_usage, max_usage_frequency_diff)
+        max_usage = max(max_usage, max_usage_frequency_diff)
+
+    # normalize the values
     scored_paths = []
     for path, flow, Base_fee, Fee_rate in candidate_paths:
         total_channel_capacity = flow
         base_fee = Base_fee
         fee_rate = Fee_rate
-        channel_info, min_capacity, max_usage_frequency_diff = query_trusted_node(path)
-        
-        total_channel_capacity = min(flow, min_capacity)
+        channel_info, min_capacity_path, max_usage_frequency_diff = query_trusted_node(path)
 
-        # Calculate composite score
+        # normalize the values
+        normalized_capacity = (min(flow, min_capacity_path) - min_capacity) / (max_capacity - min_capacity) if max_capacity > min_capacity else 0
+        total_fee = base_fee + (fee_rate * payment_task.amount)
+        normalized_fee = (total_fee - min_fee) / (max_fee - min_fee) if max_fee > min_fee else 0
+        normalized_usage = (max_usage_frequency_diff - min_usage) / (max_usage - min_usage) if max_usage > min_usage else 0
+
+        # compute the composite score
         score = (
-            alpha * total_channel_capacity -
-            beta * base_fee -
-            epsilon * (fee_rate * payment_task.amount) - 
-            gamma * max_usage_frequency_diff
+            alpha * normalized_capacity -
+            beta * normalized_fee -
+            gamma * normalized_usage
         )
-        # print(score)
-        # Append path, flow, and score to the list
         scored_paths.append((path, flow, score))
 
-    # Sort paths by score in descending order
+    # sort paths by score in descending order
     scored_paths.sort(key=lambda x: x[2], reverse=True)
 
     # Return only the paths sorted by score
