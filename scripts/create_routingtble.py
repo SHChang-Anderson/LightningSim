@@ -14,6 +14,8 @@ def bfs(graph, residual_graph, vs, vd):
     parent = {vs: None}
     while queue:
         node = queue.popleft()
+        if node not in residual_graph: 
+            continue
         for neighbor, capacity in residual_graph[node].items():
             if neighbor not in parent and capacity > 0:
                 parent[neighbor] = node
@@ -23,19 +25,22 @@ def bfs(graph, residual_graph, vs, vd):
     return None
 
 def candidate_path_computation(graph, capacity, base_fee, fee_rate, vs):
-    """Compute candidate paths"""
+    """Compute edge-disjoint candidate paths (based on Algorithm 1)"""
     candidate_paths = {}
     for vd in graph:
         if vd == vs:
             continue
+
+        # Initialize residual graph
         residual_graph = {node: {neighbor: capacity.get((node, neighbor), 0) for neighbor in graph[node]} for node in graph}
         candidate_paths[vd] = []
-        
+
         while True:
             parent = bfs(graph, residual_graph, vs, vd)
             if not parent:
                 break
-            
+
+            # from parent dictionary, reconstruct the path from vs to vd
             path = []
             node = vd
             while node != vs:
@@ -44,30 +49,37 @@ def candidate_path_computation(graph, capacity, base_fee, fee_rate, vs):
             path.append(vs)
             path.reverse()
 
-            # Calculate the minimum capacity (flow) along the path
-            Y_p = min(residual_graph[path[i]][path[i + 1]] for i in range(len(path) - 1))
-            
-            # Calculate the total base fee and fee rate
-            base_fee_sum = sum(base_fee.get((path[i], path[i + 1]), 0) for i in range(len(path) - 1))
-            fee_rate_sum = sum(fee_rate.get((path[i], path[i + 1]), 0) for i in range(len(path) - 1))
-            
+            # compute Y(p)
+            min_capacities = [residual_graph[path[i]][path[i + 1]] for i in range(len(path) - 1)]
+            Y_p = min(min_capacities)
+
+            # if Y(p) > 0, add the path to candidate_paths
             if Y_p > 0:
+                base_fee_sum = sum(base_fee.get((path[i], path[i + 1]), 0) for i in range(len(path) - 1))
+                fee_rate_sum = sum(fee_rate.get((path[i], path[i + 1]), 0) for i in range(len(path) - 1))
                 candidate_paths[vd].append((path, Y_p, base_fee_sum, fee_rate_sum))
+
+                # update the residual graph
                 for i in range(len(path) - 1):
                     u, v = path[i], path[i + 1]
-                    if v not in residual_graph:
-                        residual_graph[v] = {}
-                    if u not in residual_graph[v]:
-                        residual_graph[v][u] = 0
                     residual_graph[u][v] -= Y_p
-                    residual_graph[v][u] += Y_p
+                    residual_graph[v][u] = residual_graph.get(v, {}).get(u, 0) + Y_p
+
             else:
-                break
-        for u in list(residual_graph):
-            for v in list(residual_graph[u]):
-                if residual_graph[u][v] <= 0:
-                    del residual_graph[u][v]
-    
+                # Y(p) <= 0, find the bottleneck edge
+                bottleneck_index = min(range(len(min_capacities)), key=lambda i: min_capacities[i])
+                u, v = path[bottleneck_index], path[bottleneck_index + 1]
+                residual_graph[u][v] = 0
+                residual_graph[v][u] = capacity.get((v, u), 0)
+
+            # remove edges with zero capacity
+            for u in list(residual_graph):
+                for v in list(residual_graph[u]):
+                    if residual_graph[u][v] <= 0:
+                        del residual_graph[u][v]
+                if not residual_graph[u]:
+                    del residual_graph[u]
+
     return candidate_paths
 
 # Clear the old routing table

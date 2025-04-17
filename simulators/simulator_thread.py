@@ -10,6 +10,9 @@ import threading
 import time
 import queue
 import sys
+# {'param1': 96.09985339519194, 'param2': 2.10183642984912, 'param3': 0.8338142960594785, 'param4': 0.19995197310808, 'param5': 9}
+
+
 '''
 import sys
 sys.argv = [
@@ -17,11 +20,14 @@ sys.argv = [
     str(3),   # Probing mode
     str(10000),      # Number of payments
     str(1000),  # Payments per second
-    str(69.9121832103292), # Parameter 1
-    str(9.568959148843271), # Parameter 2
-    str(0.8334971354417864) # Parameter 3
+    str(96.09985339519194), # Parameter 1
+    str(2.10183642984912), # Parameter 2
+    str(0.8338142960594785), # Parameter 3
+    str(0.19995197310808), # Parameter 4
+    str(9) # Parameter 5
 ]
 '''
+
 np.random.seed(42)
 
 G = nx.DiGraph()

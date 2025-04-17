@@ -7,7 +7,7 @@ from test_simulation import run_simulation
 # simulate a function that takes parameters and returns two values
 def run_your_code(param1, param2, param3, param4, param5):
     # Run the simulation with the given parameters
-    success_rate, execution_time, avg_fee = run_simulation(10000, 7000, 3, param1, param2, param3, param4, param5)
+    success_rate, execution_time, avg_fee = run_simulation(10000, 5000, 3, param1, param2, param3, param4, param5)
     return success_rate, avg_fee
 
 # Multi-objective optimization function
@@ -27,10 +27,10 @@ study = optuna.create_study(
 )
 
 # Excute the optimization
-study.optimize(objective, n_trials=5)
+study.optimize(objective, n_trials=10)
 
 # Get the best trials
-sorted_best = sorted(study.best_trials, key=lambda t: (-t.values[0], t.values[1]))  # 優先考慮成功率，其次才是手續費
+sorted_best = sorted(study.best_trials, key=lambda t: (-t.values[0], t.values[1]))  # first by success rate, then by fee
 
 # display the best trials
 print("Top 5 Preferred Solutions (High Success Rate, Low Fee):")
@@ -38,8 +38,8 @@ for i, trial in enumerate(sorted_best[:5]):
     print(f"\n--- Rank #{i+1} ---")
     print(f"Success Rate: {trial.values[0]:.4f}, Fee: {trial.values[1]:.4f}")
     print(f"Params: {trial.params}")
-
-
+    
+'''
 import plotly.express as px
 import pandas as pd
 
@@ -81,7 +81,7 @@ import plotly.express as px
 import pandas as pd
 import numpy as np
 
-# 將所有 trial 的資料組成 dataframe
+# Let's assume you have a study object from Optuna
 records = []
 for trial in study.trials:
     if trial.values is not None:
@@ -121,3 +121,4 @@ fig.update_layout(scene=dict(
     zaxis_title='Param3'
 ))
 fig.show()
+'''
