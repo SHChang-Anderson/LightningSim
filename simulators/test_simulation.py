@@ -4,8 +4,10 @@ import matplotlib.pyplot as plt
 # {'param1': 0.1467240216646526, 'param2': 88.60465960039095, 'param3': 92.81928625519423}
 # {'param1': 7.540066433454607, 'param2': 1.5458277166017909, 'param3': 8.53511340709082}
 # {'param1': 69.9121832103292, 'param2': 9.568959148843271, 'param3': 0.8334971354417864}
+# 'param1': 92.57303178668649, 'param2': 0.0, 'param3': 0.0, 'param4': 0.41628467118225165, 'param5': 8
+# {'param1': 96.09985339519194, 'param2': 2.10183642984912, 'param3': 0.8338142960594785, 'param4': 0.19995197310808, 'param5': 9}
 
-def run_simulation(num_payments, payments_per_sec, execute_probing, param1=69.9121832103292, param2=9.568959148843271, param3=0.8334971354417864):
+def run_simulation(num_payments, payments_per_sec, execute_probing, param1=96.09985339519194,param2 = 2.10183642984912, param3=0.8338142960594785, param4=0.19995197310808, param5=9): 
     """
     Run the simulator_thread.py script directly by calling its main function.
 
@@ -30,7 +32,9 @@ def run_simulation(num_payments, payments_per_sec, execute_probing, param1=69.91
             str(payments_per_sec),
             str(param1),
             str(param2),    
-            str(param3)
+            str(param3),
+            str(param4),
+            str(param5)
         ]
 
         # Run the command and capture the output

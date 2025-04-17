@@ -10,7 +10,18 @@ import threading
 import time
 import queue
 import sys
-
+'''
+import sys
+sys.argv = [
+    "simulator_thread.py",  # Script name
+    str(3),   # Probing mode
+    str(10000),      # Number of payments
+    str(1000),  # Payments per second
+    str(69.9121832103292), # Parameter 1
+    str(9.568959148843271), # Parameter 2
+    str(0.8334971354417864) # Parameter 3
+]
+'''
 np.random.seed(42)
 
 G = nx.DiGraph()
@@ -544,7 +555,7 @@ def get_sorted_candidate_paths(payment_task, alpha=float(sys.argv[4]), beta=floa
     scored_paths.sort(key=lambda x: x[2], reverse=True)
 
     # Return only the paths sorted by score
-    return [path for path, _, _ in scored_paths]
+    return scored_paths
 
 def probing_worker(stop_event, simulation_start_time):
     """
@@ -576,7 +587,7 @@ def probing_worker(stop_event, simulation_start_time):
             # Continue if the queue is empty
             pass
 
-def payment_worker(task_queue, result_queue, lock_manager, stop_event, simulation_start_time):
+def payment_worker(task_queue, result_queue, lock_manager, stop_event, simulation_start_time, split_rate = float(sys.argv[7])):
     """
     Worker function for processing individual payments.
     """
@@ -638,13 +649,15 @@ def payment_worker(task_queue, result_queue, lock_manager, stop_event, simulatio
                         for log_path in log_paths:
                             payment_task.path = log_path["path"]
                             break
-
+                split = 0
                 if execute_probing == 3:
                     # Get the sorted candidate paths
                     candidate_paths = get_sorted_candidate_paths(payment_task)
                     # Select the best path
                     if candidate_paths:
-                        payment_task.path = candidate_paths[0]
+                        payment_task.path = candidate_paths[0][0]
+                        if (candidate_paths[0][1] - payment_task.amount) / candidate_paths[0][1] < split_rate:
+                            split = 0
                 
                 # Acquire locks for all channels on the path
                 channels = []
@@ -654,92 +667,217 @@ def payment_worker(task_queue, result_queue, lock_manager, stop_event, simulatio
                 try:
                     total_fee = 0
                     alpha = 0.5  # EWMA weight for channel capacity
+                    if split == 0:
+                        for i in range(len(payment_task.path) - 1):
 
-                    for i in range(len(payment_task.path) - 1):
-
-                        time.sleep(0.0003)
-                        u, v = payment_task.path[i], payment_task.path[i + 1]
-                        
-                        lock_manager.acquire_channel_lock((u, v))
-                        channels.append((u, v))  # record the channel that has been locked
-                        
-                        # check if the channel has enough capacity
-                        if G[u][v]['capacity'] < payment_task.amount:
-                            has_capacity = False
-                            payment_task.message = f"Channel {u}-{v} has insufficient capacity: {G[u][v]['capacity']} < {payment_task.amount}"
-                            lock_manager.release_channel_lock((u, v))
-                            break
-                        
-                        # temporarily deduct the amount from the channel
-                        G[u][v]['capacity'] -= payment_task.amount
-                        G[v][u]['capacity'] += payment_task.amount
-                        rollback_channels.append((u, v))  # record the channel that has been deducted
-                        lock_manager.release_channel_lock((u, v))
-
-                        # Update the usage frequency of the channel using EWMA
-                        now = time.time()
-                        if G[u][v]['last_used'] is not None:
-                            # Calculate the time difference since the last usage
-                            time_diff = now - G[u][v]['last_used']
-                            if time_diff > 0:
-                                # Apply EWMA formula
-                                previous_frequency = G[u][v].get('usage_frequency', 0)
-                                current_frequency = 1 / time_diff
-                                G[u][v]['usage_frequency'] = alpha * current_frequency + (1 - alpha) * previous_frequency
-                        else:
-                            # If this is the first usage, set the frequency to a default value
-                            G[u][v]['usage_frequency'] = 1
-                        
-                        # Update the last used timestamp
-                        G[u][v]['last_used'] = now
-                        
-                        # Add the fees for both directions
-                        total_fee += (G[u][v]['fee'] + G[u][v]['rate'] * payment_task.amount)
-
-                    # If all channels have enough capacity, the payment is successful
-                    if has_capacity:
-                        payment_task.success = True
-                        payment_task.fee = total_fee
-                        payment_task.message = "Payment successful"
-
-                        # Record the transaction timestamp for each channel in the path
-                        timestamp = time.time()
-                        
-                        u, v = payment_task.path[0], payment_task.path[-1]
-                        if u not in transaction_timestamps:
-                            transaction_timestamps[u] = {}
-                        if v not in transaction_timestamps[u]:
-                            transaction_timestamps[u][v] = []
-                        
-                        # Append the timestamp
-                        transaction_timestamps[u][v].append(timestamp)
-
-                        # Limit the number of stored timestamps to avoid memory issues
-                        if len(transaction_timestamps[u][v]) > 100:
-                            transaction_timestamps[u][v].pop(0)
-                        
-                        v, u = payment_task.path[0], payment_task.path[-1]
-                        if u not in transaction_timestamps:
-                            transaction_timestamps[u] = {}
-                        if v not in transaction_timestamps[u]:
-                            transaction_timestamps[u][v] = []
-                        
-                        # Append the timestamp
-                        transaction_timestamps[u][v].append(timestamp)
-
-                        # Limit the number of stored timestamps to avoid memory issues
-                        if len(transaction_timestamps[u][v]) > 100:
-                            transaction_timestamps[u][v].pop(0)
-                
-                    else:
-                        payment_task.fee = 0
-                        # If any channel does not have enough capacity, the payment fails
-                        for u, v in rollback_channels:
-                            lock_manager.acquire_channel_lock((u, v))
                             time.sleep(0.0003)
-                            G[u][v]['capacity'] += payment_task.amount
-                            G[v][u]['capacity'] -= payment_task.amount
+                            u, v = payment_task.path[i], payment_task.path[i + 1]
+                            
+                            lock_manager.acquire_channel_lock((u, v))
+                            channels.append((u, v))  # record the channel that has been locked
+                            
+                            # check if the channel has enough capacity
+                            if G[u][v]['capacity'] < payment_task.amount:
+                                has_capacity = False
+                                payment_task.message = f"Channel {u}-{v} has insufficient capacity: {G[u][v]['capacity']} < {payment_task.amount}"
+                                lock_manager.release_channel_lock((u, v))
+                                break
+                            
+                            # temporarily deduct the amount from the channel
+                            G[u][v]['capacity'] -= payment_task.amount
+                            G[v][u]['capacity'] += payment_task.amount
+                            rollback_channels.append((u, v))  # record the channel that has been deducted
                             lock_manager.release_channel_lock((u, v))
+
+                            # Update the usage frequency of the channel using EWMA
+                            now = time.time()
+                            if G[u][v]['last_used'] is not None:
+                                # Calculate the time difference since the last usage
+                                time_diff = now - G[u][v]['last_used']
+                                if time_diff > 0:
+                                    # Apply EWMA formula
+                                    previous_frequency = G[u][v].get('usage_frequency', 0)
+                                    current_frequency = 1 / time_diff
+                                    G[u][v]['usage_frequency'] = alpha * current_frequency + (1 - alpha) * previous_frequency
+                            else:
+                                # If this is the first usage, set the frequency to a default value
+                                G[u][v]['usage_frequency'] = 1
+                            
+                            # Update the last used timestamp
+                            G[u][v]['last_used'] = now
+                            
+                            # Add the fees for both directions
+                            total_fee += (G[u][v]['fee'] + G[u][v]['rate'] * payment_task.amount)
+
+                        # If all channels have enough capacity, the payment is successful
+                        if has_capacity:
+                            payment_task.success = True
+                            payment_task.fee = total_fee
+                            payment_task.message = "Payment successful"
+
+                            # Record the transaction timestamp for each channel in the path
+                            timestamp = time.time()
+                            
+                            u, v = payment_task.path[0], payment_task.path[-1]
+                            if u not in transaction_timestamps:
+                                transaction_timestamps[u] = {}
+                            if v not in transaction_timestamps[u]:
+                                transaction_timestamps[u][v] = []
+                            
+                            # Append the timestamp
+                            transaction_timestamps[u][v].append(timestamp)
+
+                            # Limit the number of stored timestamps to avoid memory issues
+                            if len(transaction_timestamps[u][v]) > 100:
+                                transaction_timestamps[u][v].pop(0)
+                            
+                            v, u = payment_task.path[0], payment_task.path[-1]
+                            if u not in transaction_timestamps:
+                                transaction_timestamps[u] = {}
+                            if v not in transaction_timestamps[u]:
+                                transaction_timestamps[u][v] = []
+                            
+                            # Append the timestamp
+                            transaction_timestamps[u][v].append(timestamp)
+
+                            # Limit the number of stored timestamps to avoid memory issues
+                            if len(transaction_timestamps[u][v]) > 100:
+                                transaction_timestamps[u][v].pop(0)
+                    
+                        else:
+                            payment_task.fee = 0
+                            # If any channel does not have enough capacity, the payment fails
+                            for u, v in rollback_channels:
+                                lock_manager.acquire_channel_lock((u, v))
+                                time.sleep(0.0003)
+                                G[u][v]['capacity'] += payment_task.amount
+                                G[v][u]['capacity'] -= payment_task.amount
+                                lock_manager.release_channel_lock((u, v))
+                    else:
+                        split_cont = [0, 1]
+                        sptct = 2
+                        payment_split_amount = []
+                        rollback_channels_all = []  # record channels that need to be rolled back   
+                        min_succ_rate = float('inf')
+                        while True:
+                            for i in split_cont:
+                                total_flow = sum(path[1] for path in candidate_paths[:split_cont[-1] + 1])
+                                payment_split_amount.append(payment_task.amount * (candidate_paths[i][1] / total_flow))
+                                min_succ_rate = min(min_succ_rate, (candidate_paths[i][1] - payment_split_amount[-1]) / candidate_paths[i][1])
+                            
+                            if min_succ_rate < float(sys.argv[7]) and len(split_cont) <= len(candidate_paths) and len(split_cont) < float(sys.argv[8]):
+                                payment_split_amount = []
+                                min_succ_rate = float('inf')
+                                split_cont.append(sptct)
+                                sptct += 1
+                                continue
+                            else:
+                                break
+                        pos = 0  
+                        print("split_cont", split_cont) 
+                        while True:
+                            time.sleep(0.0003)
+                            for i in split_cont:
+                                print("i" + str(i))
+                                if pos >= len(candidate_paths[i][0]) - 1:
+                                    split_cont.remove(i)
+                                    if len(split_cont) == 0:       
+                                        break
+                                    continue
+
+                                u, v = candidate_paths[i][0][pos], candidate_paths[i][0][pos + 1]
+                                
+                                lock_manager.acquire_channel_lock((u, v))
+                                channels.append((u, v))  # record the channel that has been locked
+                                # check if the channel has enough capacity
+                                if G[u][v]['capacity'] < payment_split_amount[i]:
+                                    print("dead")
+                                    has_capacity = False
+                                    payment_task.message = f"Channel {u}-{v} has insufficient capacity: {G[u][v]['capacity']} < {payment_task.amount}"
+                                    lock_manager.release_channel_lock((u, v))
+                                    split_cont.clear()
+                                    break
+                                
+                                # temporarily deduct the amount from the channel
+                                G[u][v]['capacity'] -= payment_split_amount[i]
+                                G[v][u]['capacity'] += payment_split_amount[i]
+                                if len(rollback_channels_all) < i + 1:
+                                    rollback_channels_all.append([])
+                                rollback_channels_all[i].append((u, v))  # record the channel that has been deducted
+                                lock_manager.release_channel_lock((u, v))
+
+                                # Update the usage frequency of the channel using EWMA
+                                now = time.time()
+                                if G[u][v]['last_used'] is not None:
+                                    # Calculate the time difference since the last usage
+                                    time_diff = now - G[u][v]['last_used']
+                                    if time_diff > 0:
+                                        # Apply EWMA formula
+                                        previous_frequency = G[u][v].get('usage_frequency', 0)
+                                        current_frequency = 1 / time_diff
+                                        G[u][v]['usage_frequency'] = alpha * current_frequency + (1 - alpha) * previous_frequency
+                                else:
+                                    # If this is the first usage, set the frequency to a default value
+                                    G[u][v]['usage_frequency'] = 1
+                                
+                                # Update the last used timestamp
+                                G[u][v]['last_used'] = now
+                                
+                                # Add the fees for both directions
+                                total_fee += (G[u][v]['fee'] + G[u][v]['rate'] * payment_split_amount[i])
+
+                            if len(split_cont) == 0:  
+                                    break
+                            pos += 1
+
+                        # If all channels have enough capacity, the payment is successful
+                        if has_capacity:
+                            payment_task.success = True
+                            payment_task.fee = total_fee
+                            payment_task.message = "Payment successful"
+
+                            # Record the transaction timestamp for each channel in the path
+                            timestamp = time.time()
+                            
+                            u, v = payment_task.path[0], payment_task.path[-1]
+                            if u not in transaction_timestamps:
+                                transaction_timestamps[u] = {}
+                            if v not in transaction_timestamps[u]:
+                                transaction_timestamps[u][v] = []
+                            
+                            # Append the timestamp
+                            transaction_timestamps[u][v].append(timestamp)
+
+                            # Limit the number of stored timestamps to avoid memory issues
+                            if len(transaction_timestamps[u][v]) > 100:
+                                transaction_timestamps[u][v].pop(0)
+                            
+                            v, u = payment_task.path[0], payment_task.path[-1]
+                            if u not in transaction_timestamps:
+                                transaction_timestamps[u] = {}
+                            if v not in transaction_timestamps[u]:
+                                transaction_timestamps[u][v] = []
+                            
+                            # Append the timestamp
+                            transaction_timestamps[u][v].append(timestamp)
+
+                            # Limit the number of stored timestamps to avoid memory issues
+                            if len(transaction_timestamps[u][v]) > 100:
+                                transaction_timestamps[u][v].pop(0)
+                    
+                        else:
+                            payment_task.fee = 0
+                            # If any channel does not have enough capacity, the payment fails
+                            for j in range(len(rollback_channels_all)):
+                                time.sleep(0.0003)
+                                for u, v in rollback_channels_all[j]:
+                                    try:
+                                        lock_manager.acquire_channel_lock((u, v))
+                                        G[u][v]['capacity'] += payment_split_amount[j]
+                                        G[v][u]['capacity'] -= payment_split_amount[j]
+                                    finally:
+                                        lock_manager.release_channel_lock((u, v))
+
 
                 finally:
                     # Release locks for all channels on the path
@@ -752,7 +890,11 @@ def payment_worker(task_queue, result_queue, lock_manager, stop_event, simulatio
             except Exception as e:
                 print(f"Error processing payment: {str(e)}")    
                 payment_task.message = f"Error processing payment: {str(e)}"
-            
+                import traceback
+                error_traceback = traceback.format_exc()  # aquires the traceback
+                print("Traceback details:")
+                print(error_traceback)
+    
             # Calculate processing time and completion time
             payment_task.processing_time = time.time() - processing_start_time
             payment_task.completion_time = time.time() - simulation_start_time
@@ -1081,18 +1223,18 @@ def main():
     sys.stdout = original_stdout # Reset standard output to original
     # visualize_network(G)
     # plot_payment_statistics(results)
-'''
-import sys
-sys.argv = [
-    "simulator_thread.py",  # Script name
-    str(3),   # Probing mode
-    str(1000),      # Number of payments
-    str(1000)   # Payments per second
-]
+
+
 print(sys.argv[0])
 print(sys.argv[1])
 print(sys.argv[2])
-'''
+print(sys.argv[3])
+print(sys.argv[4])
+print(sys.argv[5])
+print(sys.argv[6])
+print(sys.argv[7])
+print(sys.argv[8])
+
 # Call the main function of simulator_thread.py
 main()
 
