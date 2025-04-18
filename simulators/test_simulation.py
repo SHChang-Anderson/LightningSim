@@ -60,7 +60,7 @@ def run_simulation(num_payments, payments_per_sec, execute_probing, param1=1.061
                 if success_rate is not None and execution_time is not None:
                     break
         
-        return success_rate, execution_time / num_payments, avg_fee
+        return success_rate, execution_time , avg_fee
 
     except subprocess.TimeoutExpired:
         print(f"Timeout: The simulation took too long to complete.")

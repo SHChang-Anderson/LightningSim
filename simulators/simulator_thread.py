@@ -12,19 +12,19 @@ import queue
 import sys
 # {'param1': 96.09985339519194, 'param2': 2.10183642984912, 'param3': 0.8338142960594785, 'param4': 0.19995197310808, 'param5': 9}
 
-
 '''
+# 'param1': 1.0611725984543918, 'param2': 60.27367308783179, 'param3': 7.360643237372914, 'param4': 0.3626886219630006, 'param5': 2} 
 import sys
 sys.argv = [
     "simulator_thread.py",  # Script name
-    str(3),   # Probing mode
+    str(4),   # Probing mode
     str(1000),      # Number of payments
     str(1000),  # Payments per second
-    str(2.09985339519194), # Parameter 1
-    str(96.10183642984912), # Parameter 2
-    str(0.8338142960594785), # Parameter 3
-    str(0.19995197310808), # Parameter 4
-    str(5) # Parameter 5
+    str(1.0611725984543918), # Parameter 1
+    str(60.27367308783179), # Parameter 2
+    str(7.360643237372914), # Parameter 3
+    str(0.3626886219630006), # Parameter 4
+    str(2) # Parameter 5
 ]
 '''
 
@@ -669,7 +669,6 @@ def payment_worker(task_queue, result_queue, lock_manager, stop_event, simulatio
                 execute_payment = []
                 if execute_probing == 4:
 
-                    # aquire the lock for this sender-receiver pair
                     candidate_paths = get_paths_from_routing_table(
                         f"../routing_table/node{payment_task.sender}",
                         payment_task.sender,
@@ -1103,7 +1102,7 @@ def simulate_threaded_payments_poisson(payment_tasks, probing_task, num_threads=
     # Join all threads
     for thread in threads1:
         thread.join(timeout=1)
-    
+
     # Get results from the result queue
     results = []
     while not result_queue.empty():
@@ -1126,7 +1125,7 @@ def simulate_threaded_payments_poisson(payment_tasks, probing_task, num_threads=
     for task in sorted(results, key=lambda x: x.payment_id):
         print(task)
     
-    return successful_payments, total_payments, results, avg_fee
+    return successful_payments, total_payments, results, avg_fee, avg_processing_time
 
 # Generate payment arrival times using Poisson process
 def generate_poisson_arrival_times(num_payments, rate):
@@ -1326,7 +1325,7 @@ def main():
 
     # Simulate threaded payments
     start_time = time.time()
-    successful_payments, total_payments, results, avg_fee = simulate_threaded_payments_poisson(
+    successful_payments, total_payments, results, avg_fee, avg_processing_time = simulate_threaded_payments_poisson(
         payment_tasks, probing_task, num_threads=20
     )
     end_time = time.time()
@@ -1347,7 +1346,7 @@ def main():
     print(f"\nSuccess Rate: {success_rate:.2f}%")
     print(f"Successful Payments: {successful_payments}/{total_payments}")
     print(f"Average Fee: {avg_fee:.6f} satoshis")
-    print(f"Execution Time: {end_time - start_time:.2f} seconds")
+    print(f"Execution Time: {avg_processing_time:.8f} seconds")
 
     # Close the log file
     log_file.close()
