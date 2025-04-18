@@ -12,11 +12,11 @@ def run_your_code(param1, param2, param3, param4, param5):
 
 # Multi-objective optimization function
 def objective(trial):
-    param1 = trial.suggest_float("param1", 0.0, 100.0)
-    param2 = trial.suggest_float("param2", 0.0, 10.0)
+    param1 = trial.suggest_float("param1", 0.0, 10.0)
+    param2 = trial.suggest_float("param2", 0.0, 100.0)
     param3 = trial.suggest_float("param3", 0.0, 10.0)
     param4 = trial.suggest_float("param4", 0.0, 0.5)
-    param5 = trial.suggest_int("param5", 5, 10)
+    param5 = trial.suggest_int("param5", 0, 5)
     result1, result2 = run_your_code(param1, param2, param3, param4, param5)
     return result1, result2  
 
@@ -30,7 +30,7 @@ study = optuna.create_study(
 study.optimize(objective, n_trials=10)
 
 # Get the best trials
-sorted_best = sorted(study.best_trials, key=lambda t: (-t.values[0], t.values[1]))  # first by success rate, then by fee
+sorted_best = sorted(study.best_trials, key=lambda t: (t.values[1], -t.values[0]))  # first by fee, then by success rate
 
 # display the best trials
 print("Top 5 Preferred Solutions (High Success Rate, Low Fee):")

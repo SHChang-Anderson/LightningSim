@@ -7,7 +7,10 @@ import matplotlib.pyplot as plt
 # 'param1': 92.57303178668649, 'param2': 0.0, 'param3': 0.0, 'param4': 0.41628467118225165, 'param5': 8
 # {'param1': 96.09985339519194, 'param2': 2.10183642984912, 'param3': 0.8338142960594785, 'param4': 0.19995197310808, 'param5': 9}
 
-def run_simulation(num_payments, payments_per_sec, execute_probing, param1=96.09985339519194,param2 = 2.10183642984912, param3=0.8338142960594785, param4=0.19995197310808, param5=9): 
+# cheap
+# 'param1': 1.0611725984543918, 'param2': 60.27367308783179, 'param3': 7.360643237372914, 'param4': 0.3626886219630006, 'param5': 2} 
+
+def run_simulation(num_payments, payments_per_sec, execute_probing, param1=1.0611725984543918,param2 = 60.27367308783179, param3=7.360643237372914, param4=0.3626886219630006, param5=2): 
     """
     Run the simulator_thread.py script directly by calling its main function.
 
@@ -70,7 +73,7 @@ def test_simulation():
     """
     Test the simulator_thread.py script with different payment counts and probing settings.
     """
-    payment_counts = range(10000, 51000, 10000)  # From 1000 to 9000 payments, step 1000
+    payment_counts = range(1000, 5100, 1000)  # From 1000 to 9000 payments, step 1000
     success_rates_probing_0 = []
     success_rates_probing_1 = []
     success_rates_probing_2 = []
@@ -86,7 +89,7 @@ def test_simulation():
     # Run simulations for execute_probing = 0
     print("Running simulations with execute_probing = 0...")
     for num_payments in payment_counts:
-        success_rate, execution_time, avg_fee = run_simulation(num_payments, 5000, 0)
+        success_rate, execution_time, avg_fee = run_simulation(num_payments, 5000, 4)
         if success_rate is not None:
             success_rates_probing_0.append(success_rate)
             exe_time_probing_0.append(execution_time)
