@@ -10,15 +10,17 @@ import threading
 import time
 import queue
 import sys
+import uuid
 # {'param1': 96.09985339519194, 'param2': 2.10183642984912, 'param3': 0.8338142960594785, 'param4': 0.19995197310808, 'param5': 9}
 
-'''
+
 # 'param1': 1.0611725984543918, 'param2': 60.27367308783179, 'param3': 7.360643237372914, 'param4': 0.3626886219630006, 'param5': 2} 
+'''
 import sys
 sys.argv = [
     "simulator_thread.py",  # Script name
     str(4),   # Probing mode
-    str(1000),      # Number of payments
+    str(500),      # Number of payments
     str(1000),  # Payments per second
     str(1.0611725984543918), # Parameter 1
     str(60.27367308783179), # Parameter 2
@@ -35,6 +37,10 @@ G = nx.DiGraph()
 log_table = {}  # Global variable used to store the log table
 log_table_locks = {}  # Used to store the locks for each [sender][receiver]
 log_table_locks_lock = threading.Lock()  # Lock used to protect log_table_locks
+
+# Global variable to store probing results
+probing_results = {}
+probing_results_lock = threading.Lock()
 
 # Create a probing task queue
 probing_task_queue = queue.PriorityQueue()
@@ -386,11 +392,11 @@ class PaymentTask:
 # Probing task class
 class ProbeTask:
     def __init__(self, path, arrival_time):
+        self.task_id = str(uuid.uuid4())  # generate a unique task ID
         self.path = path
         self.amount = sys.maxsize  # Amount to probe
         self.arrival_time = arrival_time  # For compatibility with PaymentTask
-    
-# For compatibility with PriorityQueue
+
     def __lt__(self, other):
         return self.arrival_time < other.arrival_time
 
@@ -576,7 +582,7 @@ def probing_worker(stop_event, simulation_start_time):
                 global G
                 # Update channel capacities
                 for i in range(len(probing_task.path) - 1):
-                    time.sleep(0.0006)
+                    time.sleep(0.06)
                     u, v = probing_task.path[i], probing_task.path[i + 1]
                     probing_task.amount = min(probing_task.amount, G[u][v]['capacity'])
                 
@@ -588,6 +594,67 @@ def probing_worker(stop_event, simulation_start_time):
 
             # Mark the task as done
             probing_task_queue.task_done()
+                   
+        except queue.Empty:
+            # Continue if the queue is empty
+            pass
+
+def is_task_completed(task_id):
+    """
+    Check if a probing task with the given task_id has been completed.
+    """
+
+    global probing_results, probing_results_lock
+
+    with probing_results_lock:
+        return task_id in probing_results
+
+def wait_for_all_tasks(task_ids):
+    """
+    wait for all probing tasks to complete.
+    """
+    global probing_results, probing_results_lock
+
+    while True:
+        with probing_results_lock:
+            if all(task_id in probing_results for task_id in task_ids):
+                break
+
+def probing_worker_ps(stop_event, simulation_start_time):
+    """
+    Worker function for probing the network.
+    """
+    while not stop_event.is_set():
+        try:
+            # Get the next probing task from the queue
+            probing_task = probing_task_queue.get(block=True, timeout=1)
+
+            try:
+                global G, probing_results, probing_results_lock
+                # Update channel capacities
+                for i in range(len(probing_task.path) - 1):
+                    time.sleep(0.06)
+                    u, v = probing_task.path[i], probing_task.path[i + 1]
+                    probing_task.amount = min(probing_task.amount, G[u][v]['capacity'])
+
+                # construct the probing result
+                result = {
+                    "task_id": probing_task.task_id,
+                    "path": probing_task.path,
+                    "amount": probing_task.amount,
+                    "timestamp": time.time() - simulation_start_time
+                }
+
+                # save the probing result to the global dictionary
+                with probing_results_lock:
+                    probing_results[probing_task.task_id] = result
+
+            except Exception as e:
+                print(f"Error probing path: {str(e)}")
+            
+            finally:
+                # Mark the task as done
+                probing_task_queue.task_done()
                    
         except queue.Empty:
             # Continue if the queue is empty
@@ -657,6 +724,34 @@ def payment_worker(task_queue, result_queue, lock_manager, stop_event, simulatio
                             break
                 split = 0
                 if execute_probing == 3:
+                    
+                    # Get all candidate paths from the routing table
+                    candidate_paths = get_paths_from_routing_table(
+                        f"../routing_table/node{payment_task.sender}",
+                        payment_task.sender,
+                        payment_task.receiver
+                    )
+
+                    # Calculate the total fee for each path
+                    paths_with_fees = []
+                    for path, flow, base_fee, fee_rate in candidate_paths:
+                        total_fee = base_fee + (fee_rate * payment_task.amount)
+                        paths_with_fees.append((path, flow, total_fee))
+
+                    # Sort paths by fee (cheapest first)
+                    paths_with_fees.sort(key=lambda x: x[2])
+
+                    # Select the top 5 cheapest paths
+                    top_cheapest_paths = paths_with_fees[:5]
+
+                    task_ids = []
+                    # Create probing tasks for the top 5 cheapest paths
+                    for path, flow, total_fee in top_cheapest_paths:
+                        probing_task = ProbeTask(path, time.time() - simulation_start_time)
+                        task_ids.append(probing_task.task_id)
+                        probing_task_queue.put(probing_task)            
+                   
+
                     # Get the sorted candidate paths
                     candidate_paths = get_sorted_candidate_paths(payment_task)
                     # Select the best path
@@ -700,7 +795,7 @@ def payment_worker(task_queue, result_queue, lock_manager, stop_event, simulatio
                             # Update channel capacities
                             tpamount = float('inf')
                             for i in range(len(path) - 1):
-                                time.sleep(0.0006)
+                                time.sleep(0.06)
                                 u, v = path[i], path[i + 1]
                                 tpamount = min(tpamount, G[u][v]['capacity'])
 
@@ -727,7 +822,7 @@ def payment_worker(task_queue, result_queue, lock_manager, stop_event, simulatio
                     if split == 0:
                         for i in range(len(payment_task.path) - 1):
 
-                            time.sleep(0.0003)
+                            time.sleep(0.03)
                             u, v = payment_task.path[i], payment_task.path[i + 1]
                             
                             lock_manager.acquire_channel_lock((u, v))
@@ -806,7 +901,7 @@ def payment_worker(task_queue, result_queue, lock_manager, stop_event, simulatio
                             # If any channel does not have enough capacity, the payment fails
                             for u, v in rollback_channels:
                                 lock_manager.acquire_channel_lock((u, v))
-                                time.sleep(0.0003)
+                                time.sleep(0.03)
                                 G[u][v]['capacity'] += payment_task.amount
                                 G[v][u]['capacity'] -= payment_task.amount
                                 lock_manager.release_channel_lock((u, v))
@@ -821,7 +916,7 @@ def payment_worker(task_queue, result_queue, lock_manager, stop_event, simulatio
 
                             for i in range(len(execute_paths[p]) - 1):
 
-                                time.sleep(0.0003)
+                                time.sleep(0.03)
                                 u, v = execute_paths[p][i], execute_paths[p][i+1]
                                 
                                 lock_manager.acquire_channel_lock((u, v))
@@ -865,7 +960,7 @@ def payment_worker(task_queue, result_queue, lock_manager, stop_event, simulatio
                             payment_task.fee = 0
                             # If any channel does not have enough capacity, the payment fails
                             for j in range(len(rollback_channels_all)):
-                                time.sleep(0.0003)
+                                time.sleep(0.03)
                                 for u, v in rollback_channels_all[j]:
                                     try:
                                         lock_manager.acquire_channel_lock((u, v))
@@ -907,13 +1002,17 @@ def payment_worker(task_queue, result_queue, lock_manager, stop_event, simulatio
                             else:
                                 break
                         pos = 0  
+                        roll_back_pos = []
+                        remain_amount = 0
+                        rollback_channels_all = [[] for _ in range(len(split_cont))]  # initialize rollback channels for each path
                         while True:
-                            time.sleep(0.0003)
+                            time.sleep(0.03)
                             for i in split_cont:
+
+                                if len(split_cont) == 0:       
+                                        break
                                 if pos >= len(candidate_paths[i][0]) - 1:
                                     split_cont.remove(i)
-                                    if len(split_cont) == 0:       
-                                        break
                                     continue
 
                                 u, v = candidate_paths[i][0][pos], candidate_paths[i][0][pos + 1]
@@ -925,14 +1024,14 @@ def payment_worker(task_queue, result_queue, lock_manager, stop_event, simulatio
                                     has_capacity = False
                                     payment_task.message = f"Channel {u}-{v} has insufficient capacity: {G[u][v]['capacity']} < {payment_task.amount}"
                                     lock_manager.release_channel_lock((u, v))
-                                    split_cont.clear()
-                                    break
-                                
+                                    roll_back_pos.append(i)
+                                    split_cont.remove(i)
+                                    continue
+
                                 # temporarily deduct the amount from the channel
                                 G[u][v]['capacity'] -= payment_split_amount[i]
                                 G[v][u]['capacity'] += payment_split_amount[i]
-                                if len(rollback_channels_all) < i + 1:
-                                    rollback_channels_all.append([])
+
                                 rollback_channels_all[i].append((u, v))  # record the channel that has been deducted
                                 lock_manager.release_channel_lock((u, v))
 
@@ -996,17 +1095,105 @@ def payment_worker(task_queue, result_queue, lock_manager, stop_event, simulatio
                                 transaction_timestamps[u][v].pop(0)
                     
                         else:
-                            payment_task.fee = 0
+                            has_capacity = True
+                            # wait for all probing tasks to complete
+                            wait_for_all_tasks(task_ids)
+
+                            # aquire the probing results
+                            with probing_results_lock:
+                                results = [probing_results[task_id] for task_id in task_ids]
+                            # print("Probing results:", len(results))
+                            
                             # If any channel does not have enough capacity, the payment fails
                             for j in range(len(rollback_channels_all)):
-                                time.sleep(0.0003)
+                                time.sleep(0.03)
                                 for u, v in rollback_channels_all[j]:
-                                    try:
-                                        lock_manager.acquire_channel_lock((u, v))
-                                        G[u][v]['capacity'] += payment_split_amount[j]
-                                        G[v][u]['capacity'] -= payment_split_amount[j]
-                                    finally:
+                                    if j in roll_back_pos:
+                                        try:
+                                            lock_manager.acquire_channel_lock((u, v))
+                                            remain_amount += payment_split_amount[j]
+                                            payment_task.fee -= G[u][v]['fee'] + G[u][v]['rate'] * payment_split_amount[j]
+                                            G[u][v]['capacity'] += payment_split_amount[j]
+                                            G[v][u]['capacity'] -= payment_split_amount[j]
+                                        finally:
+                                            lock_manager.release_channel_lock((u, v))
+                                
+                                roll_back_pos.sort(reverse=True)
+                                for j in roll_back_pos:
+                                    if j in rollback_channels_all:
+                                        rollback_channels_all.remove(j)
+                                
+                                for j in roll_back_pos:
+                                    if j in rollback_channels_all:
+                                        payment_split_amount.remove(j)
+
+                            print(remain_amount)
+                            for path in results:
+                                execute_paths.append(path["path"])
+                                execute_payment.append(path["amount"])
+                                
+                                
+                            for p in range(len(execute_paths)):
+                                rollback_channels_all.append([])
+                                if has_capacity == False:
+                                    break
+
+                                for i in range(len(execute_paths[p]) - 1):
+
+                                    time.sleep(0.03)
+                                    u, v = execute_paths[p][i], execute_paths[p][i+1]
+                                    
+                                    lock_manager.acquire_channel_lock((u, v))
+                                    channels.append((u, v))  # record the channel that has been locked
+                                    
+                                    if remain_amount < execute_payment[p]:
+                                        execute_payment[p] = remain_amount
+
+                                    # check if the channel has enough capacity
+                                    if G[u][v]['capacity'] < execute_payment[p]:
+                                        has_capacity = False
+                                        payment_task.message = f"Channel {u}-{v} has insufficient capacity: {G[u][v]['capacity']} < {payment_task.amount}"
                                         lock_manager.release_channel_lock((u, v))
+                                        break
+                                    
+                                    # temporarily deduct the amount from the channel
+                                    G[u][v]['capacity'] -= execute_payment[p]
+                                    G[v][u]['capacity'] += execute_payment[p]
+
+                                    remain_amount -= execute_payment[p]
+
+                                    rollback_channels_all[-1].append((u, v))  # record the channel that has been deducted
+
+                                    lock_manager.release_channel_lock((u, v))
+                                    
+                                    # Add the fees for both directions
+                                    total_fee += (G[u][v]['fee'] + G[u][v]['rate'] * execute_payment[p])
+                                    if remain_amount < 0:
+                                        break  
+
+                            # If all channels have enough capacity, the payment is successful
+                            if has_capacity:
+                                payment_task.success = True
+                                payment_task.fee = total_fee
+                                payment_task.message = "Payment successful"
+                        
+                            else:
+                                payment_task.fee = 0
+                                # If any channel does not have enough capacity, the payment fails
+                                for j in range(len(rollback_channels_all)):
+                                    time.sleep(0.03)
+                                    for u, v in rollback_channels_all[j]:
+                                        try:
+                                            if j < len(payment_split_amount):
+                                                lock_manager.acquire_channel_lock((u, v))
+                                                G[u][v]['capacity'] += payment_split_amount[j]
+                                                G[v][u]['capacity'] -= payment_split_amount[j]
+                                            else:
+                                                lock_manager.acquire_channel_lock((u, v))
+                                                G[u][v]['capacity'] += execute_payment[j - len(payment_split_amount)]
+                                                G[v][u]['capacity'] -= execute_payment[j- len(payment_split_amount)]
+                                        finally:
+                                            lock_manager.release_channel_lock((u, v))
 
 
                 finally:
@@ -1033,7 +1220,7 @@ def payment_worker(task_queue, result_queue, lock_manager, stop_event, simulatio
             result_queue.put(payment_task)
 
             # Mark the task as done
-            task_queue.task_done()
+            task_queue.task_done()        
                 
         except queue.Empty:
             # Continue if the queue is empty
@@ -1076,9 +1263,9 @@ def simulate_threaded_payments_poisson(payment_tasks, probing_task, num_threads=
     
     # Create and start worker threads
     threads1 = []
-    for _ in range(20):
+    for _ in range(10):
         thread = threading.Thread(
-            target=probing_worker,
+            target=probing_worker_ps,
             args=(stop_event, simulation_start_time)
         )
         thread.daemon = True
