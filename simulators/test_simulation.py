@@ -94,7 +94,7 @@ def test_simulation():
             success_rates_probing_0.append(success_rate)
             exe_time_probing_0.append(execution_time)
             avg_fee_0.append(avg_fee)
-            print(f"Payments: {num_payments}, Success Rate (Probing=0): {success_rate:.2f}%, Execution Time: {execution_time:.8f}s, print Avg Fee: {avg_fee:.2f} satoshis")
+            print(f"Payments: {num_payments}, Success Rate (Deter Pay): {success_rate:.2f}%, Execution Time: {execution_time:.8f}s, print Avg Fee: {avg_fee:.2f} satoshis")
         else:
             success_rates_probing_0.append(0)  # Default to 0 if simulation fails
             exe_time_probing_0.append(0)
@@ -122,7 +122,7 @@ def test_simulation():
             success_rates_probing_2.append(success_rate)
             exe_time_probing_2.append(execution_time)
             avg_fee_2.append(avg_fee)
-            print(f"Payments: {num_payments}, Success Rate (Probing=1): {success_rate:.2f}%, Execution Time: {execution_time:.8f}s, avg_fee: {avg_fee:.2f} satoshis")
+            print(f"Payments: {num_payments}, Success Rate (DReP): {success_rate:.2f}%, Execution Time: {execution_time:.8f}s, avg_fee: {avg_fee:.2f} satoshis")
         else:
             success_rates_probing_2.append(0)  # Default to 0 if simulation fails
             exe_time_probing_2.append(0)
@@ -130,9 +130,9 @@ def test_simulation():
 
     # Plot the results
     plt.figure(figsize=(10, 6))
-    plt.plot(payment_counts, success_rates_probing_0, label="Probing=0", marker="o")
+    plt.plot(payment_counts, success_rates_probing_0, label="Deter Pay", marker="o")
     # plt.plot(payment_counts, success_rates_probing_1, label="Probing=1", marker="o")
-    plt.plot(payment_counts, success_rates_probing_2, label="Use cal", marker="o")
+    plt.plot(payment_counts, success_rates_probing_2, label="DReP", marker="o")
     plt.xlabel("Number of Payments")
     plt.ylabel("Success Rate (%)")
     plt.title("Success Rate vs Number of Payments")
@@ -144,9 +144,9 @@ def test_simulation():
     
     # Plot the results
     plt.figure(figsize=(10, 6))
-    plt.plot(payment_counts, exe_time_probing_0, label="Probing=0", marker="o")
+    plt.plot(payment_counts, exe_time_probing_0, label="Deter Pay", marker="o")
     # plt.plot(payment_counts, exe_time_probing_1, label="Probing=1", marker="o")
-    plt.plot(payment_counts, exe_time_probing_2, label="Use cal", marker="o")
+    plt.plot(payment_counts, exe_time_probing_2, label="DReP", marker="o")
     plt.xlabel("Number of Payments")
     plt.ylabel("Execution Time (s) / Payment")
     plt.title("Execution Time vs Number of Payments")
@@ -158,9 +158,9 @@ def test_simulation():
 
     # Plot the results
     plt.figure(figsize=(10, 6))
-    plt.plot(payment_counts, avg_fee_0, label="Probing=0", marker="o")
+    plt.plot(payment_counts, avg_fee_0, label="Deter Pay", marker="o")
     # plt.plot(payment_counts, avg_fee_1, label="Probing=1", marker="o")
-    plt.plot(payment_counts, avg_fee_2, label="Use cal", marker="o")
+    plt.plot(payment_counts, avg_fee_2, label="DReP", marker="o")
     plt.xlabel("Number of Payments")
     plt.ylabel("Average Fee (satoshis)")
     plt.title("Average Fee vs Number of Payments")

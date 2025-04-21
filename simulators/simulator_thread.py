@@ -15,20 +15,22 @@ import uuid
 
 
 # 'param1': 1.0611725984543918, 'param2': 60.27367308783179, 'param3': 7.360643237372914, 'param4': 0.3626886219630006, 'param5': 2} 
+
 '''
 import sys
 sys.argv = [
     "simulator_thread.py",  # Script name
-    str(4),   # Probing mode
-    str(500),      # Number of payments
+    str(3),   # Probing mode
+    str(1000),      # Number of payments
     str(1000),  # Payments per second
     str(1.0611725984543918), # Parameter 1
     str(60.27367308783179), # Parameter 2
     str(7.360643237372914), # Parameter 3
     str(0.3626886219630006), # Parameter 4
-    str(2) # Parameter 5
+    str(3) # Parameter 5
 ]
 '''
+
 
 np.random.seed(42)
 
@@ -958,20 +960,39 @@ def payment_worker(task_queue, result_queue, lock_manager, stop_event, simulatio
                     
                         else:
                             payment_task.fee = 0
-                            # If any channel does not have enough capacity, the payment fails
-                            for j in range(len(rollback_channels_all)):
-                                time.sleep(0.03)
-                                for u, v in rollback_channels_all[j]:
+
+                            pos = 0  # current position in the rollback channels
+                            roll_back_pos = []  # record channels that have been rolled back
+
+                            while True:
+                                time.sleep(0.03)  # simulate processing time
+
+                                for i in range(len(rollback_channels_all)):
+                                    if i in roll_back_pos:
+                                        continue  # skip already rolled back channels
+
+                                    if pos >= len(rollback_channels_all[i]):
+                                        roll_back_pos.append(i)  # if the channel has been rolled back, add it to the list
+                                        continue
+
+                                    u, v = rollback_channels_all[i][pos]  # aquire the channel to be rolled back
                                     try:
                                         lock_manager.acquire_channel_lock((u, v))
-                                        G[u][v]['capacity'] += execute_payment[j]
-                                        G[v][u]['capacity'] -= execute_payment[j]
+
+                                        # roll back the channel
+                                        G[u][v]['capacity'] += payment_split_amount[i]
+                                        G[v][u]['capacity'] -= payment_split_amount[i]
                                     finally:
                                         lock_manager.release_channel_lock((u, v))
 
+                                # if all channels have been rolled back, break the loop
+                                if len(roll_back_pos) == len(rollback_channels_all):
+                                    break
+
+                                pos += 1  # next channel to roll back
+
                     else:
                         split_cont = [0, 1]
-                        sptct = 2
                         payment_split_amount = []
                         rollback_channels_all = []  # record channels that need to be rolled back
                         min_succ_rate = float('inf')
@@ -1096,6 +1117,36 @@ def payment_worker(task_queue, result_queue, lock_manager, stop_event, simulatio
                     
                         else:
                             has_capacity = True
+                            
+                            # If any channel does not have enough capacity, the payment fails
+                            pos = 0  # current position in the rollback channels
+
+                            while True:
+                                time.sleep(0.03)  # simulate processing time
+
+                                for i in roll_back_pos:  # only roll back the channels that have been rolled back
+                                    if pos >= len(rollback_channels_all[i]):
+                                        continue  # if the channel has been rolled back, skip it
+
+                                    u, v = rollback_channels_all[i][pos]  # aquire the channel to be rolled back
+                                    try:
+                                        lock_manager.acquire_channel_lock((u, v))
+
+                                        if i < len(payment_split_amount):
+                                            G[u][v]['capacity'] += payment_split_amount[i]
+                                            G[v][u]['capacity'] -= payment_split_amount[i]
+                                        else:
+                                            G[u][v]['capacity'] += execute_payment[i - len(payment_split_amount)]
+                                            G[v][u]['capacity'] -= execute_payment[i - len(payment_split_amount)]
+                                    finally:
+                                        lock_manager.release_channel_lock((u, v))
+
+                                # if all channels have been rolled back, break the loop 
+                                if all(pos >= len(rollback_channels_all[i]) for i in roll_back_pos):
+                                    break
+
+                                pos += 1  # proceed to the next channel to roll back
+                            
                             # wait for all probing tasks to complete
                             wait_for_all_tasks(task_ids)
 
@@ -1103,35 +1154,10 @@ def payment_worker(task_queue, result_queue, lock_manager, stop_event, simulatio
                             with probing_results_lock:
                                 results = [probing_results[task_id] for task_id in task_ids]
                             # print("Probing results:", len(results))
-                            
-                            # If any channel does not have enough capacity, the payment fails
-                            for j in range(len(rollback_channels_all)):
-                                time.sleep(0.03)
-                                for u, v in rollback_channels_all[j]:
-                                    if j in roll_back_pos:
-                                        try:
-                                            lock_manager.acquire_channel_lock((u, v))
-                                            remain_amount += payment_split_amount[j]
-                                            payment_task.fee -= G[u][v]['fee'] + G[u][v]['rate'] * payment_split_amount[j]
-                                            G[u][v]['capacity'] += payment_split_amount[j]
-                                            G[v][u]['capacity'] -= payment_split_amount[j]
-                                        finally:
-                                            lock_manager.release_channel_lock((u, v))
-                                
-                                roll_back_pos.sort(reverse=True)
-                                for j in roll_back_pos:
-                                    if j in rollback_channels_all:
-                                        rollback_channels_all.remove(j)
-                                
-                                for j in roll_back_pos:
-                                    if j in rollback_channels_all:
-                                        payment_split_amount.remove(j)
 
-                            print(remain_amount)
                             for path in results:
                                 execute_paths.append(path["path"])
                                 execute_payment.append(path["amount"])
-                                
                                 
                             for p in range(len(execute_paths)):
                                 rollback_channels_all.append([])
@@ -1179,22 +1205,41 @@ def payment_worker(task_queue, result_queue, lock_manager, stop_event, simulatio
                         
                             else:
                                 payment_task.fee = 0
-                                # If any channel does not have enough capacity, the payment fails
-                                for j in range(len(rollback_channels_all)):
-                                    time.sleep(0.03)
-                                    for u, v in rollback_channels_all[j]:
-                                        try:
-                                            if j < len(payment_split_amount):
-                                                lock_manager.acquire_channel_lock((u, v))
-                                                G[u][v]['capacity'] += payment_split_amount[j]
-                                                G[v][u]['capacity'] -= payment_split_amount[j]
-                                            else:
-                                                lock_manager.acquire_channel_lock((u, v))
-                                                G[u][v]['capacity'] += execute_payment[j - len(payment_split_amount)]
-                                                G[v][u]['capacity'] -= execute_payment[j- len(payment_split_amount)]
-                                        finally:
-                                            lock_manager.release_channel_lock((u, v))
 
+                            pos = 0  # current position in the rollback channels
+                            roll_back_pos = []  # record channels that have been rolled back
+
+                            while True:
+                                time.sleep(0.03)  # simulate processing time
+
+                                for i in range(len(rollback_channels_all)):
+                                    if i in roll_back_pos:
+                                        continue  # skip already rolled back channels
+
+                                    if pos >= len(rollback_channels_all[i]):
+                                        roll_back_pos.append(i)  # if the channel has been rolled back, add it to the list
+                                        continue
+
+                                    u, v = rollback_channels_all[i][pos]  # aquire the channel to be rolled back
+                                    
+                                    try:
+                                        if i < len(payment_split_amount):
+                                                lock_manager.acquire_channel_lock((u, v))
+                                                G[u][v]['capacity'] += payment_split_amount[i]
+                                                G[v][u]['capacity'] -= payment_split_amount[i]
+                                        else:
+                                            lock_manager.acquire_channel_lock((u, v))
+                                            G[u][v]['capacity'] += execute_payment[i - len(payment_split_amount)]
+                                            G[v][u]['capacity'] -= execute_payment[i- len(payment_split_amount)]
+                                    finally:
+                                        lock_manager.release_channel_lock((u, v))
+
+                                # if all channels have been rolled back, break the loop
+                                if len(roll_back_pos) == len(rollback_channels_all):
+                                    break
+
+                                pos += 1  # next channel to roll back
+                                    
 
                 finally:
                     # Release locks for all channels on the path
