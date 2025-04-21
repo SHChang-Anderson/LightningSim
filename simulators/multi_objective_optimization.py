@@ -5,7 +5,7 @@ import time
 from test_simulation import run_simulation
 
 # simulate a function that takes parameters and returns two values
-def run_your_code(param1, param2, param3, param4, param5):
+def run_tunning(param1, param2, param3, param4, param5):
     # Run the simulation with the given parameters
     success_rate, execution_time, avg_fee = run_simulation(10000, 5000, 3, param1, param2, param3, param4, param5)
     return success_rate, avg_fee
@@ -17,7 +17,7 @@ def objective(trial):
     param3 = trial.suggest_float("param3", 0.0, 10.0)
     param4 = trial.suggest_float("param4", 0.0, 0.5)
     param5 = trial.suggest_int("param5", 0, 5)
-    result1, result2 = run_your_code(param1, param2, param3, param4, param5)
+    result1, result2 = run_tunning(param1, param2, param3, param4, param5)
     return result1, result2  
 
 # Create a study object

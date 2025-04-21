@@ -11,6 +11,7 @@ import time
 import queue
 import sys
 import uuid
+import shutil
 # {'param1': 96.09985339519194, 'param2': 2.10183642984912, 'param3': 0.8338142960594785, 'param4': 0.19995197310808, 'param5': 9}
 
 
@@ -136,16 +137,17 @@ def query_trusted_node(path):
     return channel_info, min_capacity, max_usage_frequency_diff
 
 
-def update_trust_scores_thread(G, trust_pairs, stop_event, update_interval=1):
+def update_trust_scores_thread(G, trust_pairs, stop_event, update_interval=1, output_file="trust_nodes.txt"):
     """
-    Thread function to periodically update trust scores based on recent transactions.
+    Thread function to periodically update trust scores based on recent transactions
+    and output trust nodes to a file.
 
     Parameters:
     - G (nx.Graph): The network graph.
     - trust_pairs (dict): The dictionary storing trust relationships.
     - stop_event (threading.Event): Event to signal the thread to stop.
-    - transaction_window (int): The time window (in seconds) to consider recent transactions.
     - update_interval (int): The interval (in seconds) between updates.
+    - output_file (str): The file to output trust nodes.
     """
     while not stop_event.is_set():
         try:
@@ -160,6 +162,12 @@ def update_trust_scores_thread(G, trust_pairs, stop_event, update_interval=1):
                             remove_trust_pair(trust_pairs, node, neighbor)
                     else:
                         remove_trust_pair(trust_pairs, node, neighbor)  # if no transactions, remove trust
+
+            # Output trust nodes to a file
+            with open(output_file, "a") as f:
+                for node, trusted_nodes in trust_pairs.items():
+                    trusted_nodes_str = ", ".join(map(str, trusted_nodes))
+                    f.write(f"Node {node}: {trusted_nodes_str}\n")
 
             # Sleep for the update interval
             time.sleep(update_interval)
@@ -1494,6 +1502,11 @@ def main():
     file_path = "../creditcard.csv"  # CSV file path
 
     clear_log_table() # Clear the log table
+
+    # Clear the old routing table
+    file_to_delete = "./trust_nodes.txt"
+    if os.path.exists(file_to_delete):
+        os.remove(file_to_delete)
 
     # Load the Lightning Network graph
     with open("../scripts/lightning_network.txt", "r") as f:
