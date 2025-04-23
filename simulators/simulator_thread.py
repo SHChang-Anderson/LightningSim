@@ -32,7 +32,6 @@ sys.argv = [
 ]
 '''
 
-
 np.random.seed(42)
 
 G = nx.DiGraph()
@@ -571,7 +570,7 @@ def get_sorted_candidate_paths(payment_task, alpha=float(sys.argv[4]), beta=floa
             beta * normalized_fee -
             gamma * normalized_usage
         )
-        scored_paths.append((path, flow, score))
+        scored_paths.append((path, flow, score, total_fee))
 
     # sort paths by score in descending order
     scored_paths.sort(key=lambda x: x[2], reverse=True)
@@ -733,34 +732,7 @@ def payment_worker(task_queue, result_queue, lock_manager, stop_event, simulatio
                             payment_task.path = log_path["path"]
                             break
                 split = 0
-                if execute_probing == 3:
-                    
-                    # Get all candidate paths from the routing table
-                    candidate_paths = get_paths_from_routing_table(
-                        f"../routing_table/node{payment_task.sender}",
-                        payment_task.sender,
-                        payment_task.receiver
-                    )
-
-                    # Calculate the total fee for each path
-                    paths_with_fees = []
-                    for path, flow, base_fee, fee_rate in candidate_paths:
-                        total_fee = base_fee + (fee_rate * payment_task.amount)
-                        paths_with_fees.append((path, flow, total_fee))
-
-                    # Sort paths by fee (cheapest first)
-                    paths_with_fees.sort(key=lambda x: x[2])
-
-                    # Select the top 5 cheapest paths
-                    top_cheapest_paths = paths_with_fees[:5]
-
-                    task_ids = []
-                    # Create probing tasks for the top 5 cheapest paths
-                    for path, flow, total_fee in top_cheapest_paths:
-                        probing_task = ProbeTask(path, time.time() - simulation_start_time)
-                        task_ids.append(probing_task.task_id)
-                        probing_task_queue.put(probing_task)            
-                   
+                if execute_probing == 3:          
 
                     # Get the sorted candidate paths
                     candidate_paths = get_sorted_candidate_paths(payment_task)
@@ -1030,6 +1002,28 @@ def payment_worker(task_queue, result_queue, lock_manager, stop_event, simulatio
                                 continue
                             else:
                                 break
+                        
+
+                        # Calculate the total fee for each path
+                        paths_with_fees = []
+                        # Start iterating from candidate_paths[split_amount[-1] + 1]
+                        start_index = split_cont[-1] + 1 if split_cont else 0  # Ensure split_amount is not empty
+                        for path, flow, scores, total_fees in candidate_paths[start_index:]:
+                            paths_with_fees.append((path, flow, total_fees))
+
+                        # Sort paths by fee (cheapest first)
+                        paths_with_fees.sort(key=lambda x: x[2])
+
+                        # Select the top 5 cheapest paths
+                        top_cheapest_paths = paths_with_fees[:5]
+
+                        task_ids = []
+                        # Create probing tasks for the top 5 cheapest paths
+                        for path, flow, total_fees in top_cheapest_paths:
+                            probing_task = ProbeTask(path, time.time() - simulation_start_time)
+                            task_ids.append(probing_task.task_id)
+                            probing_task_queue.put(probing_task)  
+                        
                         pos = 0  
                         roll_back_pos = []
                         remain_amount = 0
@@ -1214,39 +1208,39 @@ def payment_worker(task_queue, result_queue, lock_manager, stop_event, simulatio
                             else:
                                 payment_task.fee = 0
 
-                            pos = 0  # current position in the rollback channels
-                            roll_back_pos = []  # record channels that have been rolled back
+                                pos = 0  # current position in the rollback channels
+                                roll_back_pos = []  # record channels that have been rolled back
 
-                            while True:
-                                time.sleep(0.03)  # simulate processing time
+                                while True:
+                                    time.sleep(0.03)  # simulate processing time
 
-                                for i in range(len(rollback_channels_all)):
-                                    if i in roll_back_pos:
-                                        continue  # skip already rolled back channels
+                                    for i in range(len(rollback_channels_all)):
+                                        if i in roll_back_pos:
+                                            continue  # skip already rolled back channels
 
-                                    if pos >= len(rollback_channels_all[i]):
-                                        roll_back_pos.append(i)  # if the channel has been rolled back, add it to the list
-                                        continue
+                                        if pos >= len(rollback_channels_all[i]):
+                                            roll_back_pos.append(i)  # if the channel has been rolled back, add it to the list
+                                            continue
 
-                                    u, v = rollback_channels_all[i][pos]  # aquire the channel to be rolled back
-                                    
-                                    try:
-                                        if i < len(payment_split_amount):
+                                        u, v = rollback_channels_all[i][pos]  # aquire the channel to be rolled back
+                                        
+                                        try:
+                                            if i < len(payment_split_amount):
+                                                    lock_manager.acquire_channel_lock((u, v))
+                                                    G[u][v]['capacity'] += payment_split_amount[i]
+                                                    G[v][u]['capacity'] -= payment_split_amount[i]
+                                            else:
                                                 lock_manager.acquire_channel_lock((u, v))
-                                                G[u][v]['capacity'] += payment_split_amount[i]
-                                                G[v][u]['capacity'] -= payment_split_amount[i]
-                                        else:
-                                            lock_manager.acquire_channel_lock((u, v))
-                                            G[u][v]['capacity'] += execute_payment[i - len(payment_split_amount)]
-                                            G[v][u]['capacity'] -= execute_payment[i- len(payment_split_amount)]
-                                    finally:
-                                        lock_manager.release_channel_lock((u, v))
+                                                G[u][v]['capacity'] += execute_payment[i - len(payment_split_amount)]
+                                                G[v][u]['capacity'] -= execute_payment[i- len(payment_split_amount)]
+                                        finally:
+                                            lock_manager.release_channel_lock((u, v))
 
-                                # if all channels have been rolled back, break the loop
-                                if len(roll_back_pos) == len(rollback_channels_all):
-                                    break
+                                    # if all channels have been rolled back, break the loop
+                                    if len(roll_back_pos) == len(rollback_channels_all):
+                                        break
 
-                                pos += 1  # next channel to roll back
+                                    pos += 1  # next channel to roll back
                                     
 
                 finally:
