@@ -960,8 +960,8 @@ def payment_worker(task_queue, result_queue, lock_manager, stop_event, simulatio
                                         lock_manager.acquire_channel_lock((u, v))
 
                                         # roll back the channel
-                                        G[u][v]['capacity'] += payment_split_amount[i]
-                                        G[v][u]['capacity'] -= payment_split_amount[i]
+                                        G[u][v]['capacity'] += execute_payment[i]
+                                        G[v][u]['capacity'] -= execute_payment[i]
                                     finally:
                                         lock_manager.release_channel_lock((u, v))
 
