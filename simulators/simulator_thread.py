@@ -21,14 +21,14 @@ import shutil
 import sys
 sys.argv = [
     "simulator_thread.py",  # Script name
-    str(3),   # Probing mode
+    str(0),   # Probing mode
     str(1000),      # Number of payments
-    str(1000),  # Payments per second
+    str(10),  # Payments per second
     str(1.0611725984543918), # Parameter 1
     str(60.27367308783179), # Parameter 2
     str(7.360643237372914), # Parameter 3
     str(0.3626886219630006), # Parameter 4
-    str(3) # Parameter 5
+    str(2) # Parameter 5
 ]
 '''
 
@@ -1116,7 +1116,6 @@ def payment_worker(task_queue, result_queue, lock_manager, stop_event, simulatio
                             # Limit the number of stored timestamps to avoid memory issues
                             if len(transaction_timestamps[u][v]) > 100:
                                 transaction_timestamps[u][v].pop(0)
-                    
                         else:
                             has_capacity = True
                             
@@ -1241,8 +1240,8 @@ def payment_worker(task_queue, result_queue, lock_manager, stop_event, simulatio
                                         break
 
                                     pos += 1  # next channel to roll back
-                                    
 
+                           
                 finally:
                     # Release locks for all channels on the path
                     '''
@@ -1275,27 +1274,31 @@ def payment_worker(task_queue, result_queue, lock_manager, stop_event, simulatio
 
 
 # Simulate threaded payments with Poisson arrival
-def simulate_threaded_payments_poisson(payment_tasks, probing_task, num_threads=10):
+def simulate_threaded_payments_poisson(payment_tasks, probing_task, num_threads=20, simulation_duration=60):
     """
     Simulate parallel payments in the Lightning Network using multiple threads.
     Payments arrive according to a Poisson process.
+    simulation_duration: simulation duration in seconds
     """
     # Create task and result queues
     task_queue = queue.PriorityQueue()
     result_queue = queue.Queue()
-    
+
     # Create a lock manager
     lock_manager = ChannelLockManager()
-    
+
     # Create a stop event
     stop_event = threading.Event()
-    
+
     # Record the simulation start time
     simulation_start_time = time.time()
-    
+
+    # set the simulation end time
+    simulation_end_time = simulation_start_time + simulation_duration
+
     # Create and start worker threads
     threads = []
-    for _ in range(5):
+    for _ in range(num_threads):
         thread = threading.Thread(
             target=payment_worker,
             args=(task_queue, result_queue, lock_manager, stop_event, simulation_start_time)
@@ -1303,14 +1306,14 @@ def simulate_threaded_payments_poisson(payment_tasks, probing_task, num_threads=
         thread.daemon = True
         thread.start()
         threads.append(thread)
-    
+
     # Add payment tasks to the task queue
     for task in payment_tasks:
         task_queue.put(task)
-    
-    # Create and start worker threads
+
+    # Create and start probing worker threads
     threads1 = []
-    for _ in range(10):
+    for _ in range(num_threads):
         thread = threading.Thread(
             target=probing_worker_ps,
             args=(stop_event, simulation_start_time)
@@ -1318,22 +1321,22 @@ def simulate_threaded_payments_poisson(payment_tasks, probing_task, num_threads=
         thread.daemon = True
         thread.start()
         threads1.append(thread)
-    
-    # Add payment tasks to the task queue
+
+    # Add probing tasks to the probing task queue
     for task in probing_task:
         probing_task_queue.put(task)
 
-    # Wait for all tasks to be processed
-    task_queue.join()
+    # wait for all tasks to be completed
+    while time.time() < simulation_end_time:
+        time.sleep(1)  # check every second
 
     # Set the stop event
     stop_event.set()
-    
+
     # Join all threads
     for thread in threads:
         thread.join(timeout=1)
-    
-    # Join all threads
+
     for thread in threads1:
         thread.join(timeout=1)
 
@@ -1341,24 +1344,24 @@ def simulate_threaded_payments_poisson(payment_tasks, probing_task, num_threads=
     results = []
     while not result_queue.empty():
         results.append(result_queue.get())
-    
+
     # Count successful payments
     successful_payments = sum(1 for task in results if task.success)
     total_payments = len(results)
     avg_fee = sum(task.fee for task in results) / successful_payments if total_payments > 0 else 0
-    
+
     # Calculate statistics
     if results:
         avg_processing_time = sum(task.processing_time for task in results) / len(results)
         avg_completion_time = sum(task.completion_time for task in results) / len(results)
         print(f"Average processing time: {avg_processing_time:.8f} seconds")
         print(f"Average completion time: {avg_completion_time:.2f} seconds")
-    
+
     # Print payment results
     print(f"\nPayment results:")
     for task in sorted(results, key=lambda x: x.payment_id):
         print(task)
-    
+
     return successful_payments, total_payments, results, avg_fee, avg_processing_time
 
 # Generate payment arrival times using Poisson process
