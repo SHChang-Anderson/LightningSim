@@ -17,20 +17,20 @@ import shutil
 
 # 'param1': 1.0611725984543918, 'param2': 60.27367308783179, 'param3': 7.360643237372914, 'param4': 0.3626886219630006, 'param5': 2} 
 
-'''
+
 import sys
 sys.argv = [
     "simulator_thread.py",  # Script name
-    str(0),   # Probing mode
+    str(4),   # Probing mode
     str(1000),      # Number of payments
-    str(10),  # Payments per second
+    str(50),  # Payments per second
     str(1.0611725984543918), # Parameter 1
     str(60.27367308783179), # Parameter 2
     str(7.360643237372914), # Parameter 3
     str(0.3626886219630006), # Parameter 4
+    str(0.2393143708198513), # Parameter 4
     str(2) # Parameter 5
 ]
-'''
 
 np.random.seed(42)
 
@@ -989,7 +989,7 @@ def payment_worker(task_queue, result_queue, lock_manager, stop_event, simulatio
                                     (candidate_paths[path_idx_in_candidate_paths][1] - split_amount_for_path) / candidate_paths[path_idx_in_candidate_paths][1]
                                 )
 
-                            if min_succ_rate < float(sys.argv[7]) and len(split_cont) < len(candidate_paths) and len(split_cont) < float(sys.argv[8]):
+                            if min_succ_rate < float(sys.argv[7]) and len(split_cont) < len(candidate_paths) and len(split_cont) < float(sys.argv[9]):
                                 payment_split_amount_dict.clear() # Clear amounts as we are re-calculating
                                 min_succ_rate = float('inf')
                                 # Add the next path from candidate_paths to split_cont by its index
@@ -1030,7 +1030,7 @@ def payment_worker(task_queue, result_queue, lock_manager, stop_event, simulatio
                         
                         pos = 0  
                         roll_back_pos = []
-                        remain_amount = 0
+                        remain_amount = payment_task.amount
                         rollback_channels_all = [[] for _ in range(len(split_cont))]  # initialize rollback channels for each path
                         while True:
                             time.sleep(0.03)
@@ -1041,6 +1041,7 @@ def payment_worker(task_queue, result_queue, lock_manager, stop_event, simulatio
 
                             for path_idx_in_candidates in active_initial_split_paths:
                                 if pos >= len(candidate_paths[path_idx_in_candidates][0]) - 1: # Check if path ended
+                                    remain_amount -= payment_split_amount_dict[path_idx_in_candidates] # Deduct the split amount for this path
                                     if path_idx_in_candidates in split_cont: # remove if still there
                                        split_cont.remove(path_idx_in_candidates)
                                     continue
@@ -1056,7 +1057,6 @@ def payment_worker(task_queue, result_queue, lock_manager, stop_event, simulatio
                                     payment_task.message = f"Channel {u}-{v} insufficient for initial split: {G[u][v]['capacity']} < {current_path_amount_to_deduct}"
                                     lock_manager.release_channel_lock((u, v))
                                     if path_idx_in_candidates in split_cont: # Mark for removal / stop processing this path
-                                        roll_back_pos.append(path_idx_in_candidates) 
                                         split_cont.remove(path_idx_in_candidates)
                                     # Since one path segment failed, the whole initial split group fails for atomicity.
                                     # We need to break all loops for this initial split and proceed to fallback.
@@ -1119,6 +1119,7 @@ def payment_worker(task_queue, result_queue, lock_manager, stop_event, simulatio
 
                         # Fallback logic is only entered if has_capacity is False after the initial split attempt.
                         if not has_capacity:
+                            split_rate = float(sys.argv[8]) if len(sys.argv) > 8 else 0.1 # Default split rate if not provided
                             payment_task.success = False # Explicitly ensure if not already.
                             # --- START OF PART B: Fallback Logic ---
                             # B.i.A: Determine Path Set and Amounts for Fallback
@@ -1126,7 +1127,7 @@ def payment_worker(task_queue, result_queue, lock_manager, stop_event, simulatio
                             # Fallback attempts to satisfy the *original* payment_task.amount.
                             # Any partial success/failure of the initial split is complex to reconcile here without more state.
                             # The global `all_deducted_channels_for_task` will correctly roll back *all* deductions if the payment ultimately fails.
-                            current_remain_amount_for_fallback = payment_task.amount 
+                            current_remain_amount_for_fallback = remain_amount 
 
                             # Ensure task_ids for probing are available from the initial split attempt's probing phase
                             # This assumes 'task_ids' from the 'else' block (line ~1030 in original) is in scope and contains relevant IDs.
@@ -1488,9 +1489,12 @@ def main():
     clear_log_table() # Clear the log table
 
     # Clear the old routing table
+    '''
     file_to_delete = "./trust_nodes.txt"
     if os.path.exists(file_to_delete):
         os.remove(file_to_delete)
+    '''
+    
 
     # Load the Lightning Network graph
     with open("../scripts/lightning_network.txt", "r") as f:
@@ -1544,6 +1548,7 @@ def main():
     # Create a stop event for the trust score update thread
     stop_event = threading.Event()
 
+    '''
     # Start the trust score update thread
     trust_thread = threading.Thread(
         target=update_trust_scores_thread,
@@ -1551,7 +1556,7 @@ def main():
     )
     trust_thread.daemon = True
     trust_thread.start()
-
+    '''
     # Simulate threaded payments
     start_time = time.time()
     successful_payments, total_payments, results, avg_fee, avg_processing_time = simulate_threaded_payments_poisson(
@@ -1561,7 +1566,7 @@ def main():
 
     # Stop the trust score update thread
     stop_event.set()
-    trust_thread.join()
+    # trust_thread.join()
 
     clear_log_table() # Clear the log table
     

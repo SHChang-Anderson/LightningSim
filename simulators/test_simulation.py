@@ -9,8 +9,8 @@ import matplotlib.pyplot as plt
 
 # cheap
 # 'param1': 1.0611725984543918, 'param2': 60.27367308783179, 'param3': 7.360643237372914, 'param4': 0.3626886219630006, 'param5': 2} 
-
-def run_simulation(num_payments, payments_per_sec, execute_probing, param1=1.0611725984543918,param2 = 60.27367308783179, param3=7.360643237372914, param4=0.3626886219630006, param5=2): 
+# 'param1': 3.5058356214988553, 'param2': 63.894639286155495, 'param3': 7.130481644623853, 'param4': 0.48043474123701574, 'param5': 0.2393143708198513, 'param6': 4
+def run_simulation(num_payments, payments_per_sec, execute_probing, param1=3.5058356214988553, param2=63.894639286155495, param3=7.130481644623853, param4=0.48043474123701574, param5=0.2393143708198513, param6=4): 
     """
     Run the simulator_thread.py script directly by calling its main function.
 
@@ -37,7 +37,8 @@ def run_simulation(num_payments, payments_per_sec, execute_probing, param1=1.061
             str(param2),    
             str(param3),
             str(param4),
-            str(param5)
+            str(param5),
+            str(param6)
         ]
 
         # Run the command and capture the output
@@ -75,7 +76,7 @@ def test_simulation():
     Test the simulator_thread.py script with different payment counts and probing settings.
     """
     payment_counts = range(1000, 5100, 1000)  # From 1000 to 9000 payments, step 1000
-    TPS1 = range(10, 60, 10)  # From 1 to 100 TPS, step 10
+    TPS1 = range(30, 60, 10)  # From 1 to 100 TPS, step 10
     success_rates_probing_0 = []
     success_rates_probing_1 = []
     success_rates_probing_2 = []
@@ -107,7 +108,7 @@ def test_simulation():
     print("\nRunning simulations with execute_probing = 1...")
     for tps in TPS1:
         print("2")
-        success_rate, execution_time, avg_fee = run_simulation(100000, tps, 0)
+        success_rate, execution_time, avg_fee = run_simulation(1000, tps, 3)
         if success_rate is not None:
             success_rates_probing_1.append(success_rate)
             exe_time_probing_1.append(execution_time)
@@ -123,7 +124,7 @@ def test_simulation():
     print("\nRunning simulations with execute_probing = 3...")
     for tps in TPS1:
         print("3")
-        success_rate, execution_time, avg_fee = run_simulation(100000, tps, 2)
+        success_rate, execution_time, avg_fee = run_simulation(1000, tps, 4)
         if success_rate is not None:
             success_rates_probing_2.append(success_rate)
             exe_time_probing_2.append(execution_time)
@@ -139,9 +140,9 @@ def test_simulation():
     # TPS = [10, 20, 30, 40, 50, 60]
 
     # Deter Pay results
-    success_rates_probing_0 = [89.85, 85.88, 86.66, 87.45, 87.57]
-    exe_time_probing_0 = [0.95304964, 1.06003440, 0.97741990, 0.93625529, 0.99946868]
-    avg_fee_0 = [145.91, 141.61, 139.31, 140.90, 142.35]
+    success_rates_probing_0 = [89.85, 85.88, 86.66]
+    exe_time_probing_0 = [0.95304964, 1.06003440, 0.97741990]
+    avg_fee_0 = [145.91, 141.61, 139.31]
     '''
     # Proposed results
     success_rates_probing_2 = [60.34, 62.05, 54.89, 55.17, 56.17, 51.87]
