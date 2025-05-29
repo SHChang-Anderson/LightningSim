@@ -796,7 +796,13 @@ def payment_worker(task_queue, result_queue, lock_manager, stop_event, simulatio
                 # Acquire locks for all channels on the path
                 channels = []
                 has_capacity = True
-                rollback_channels = []  # record channels that need to be rolled back
+                # GLOBALIZED ROLLBACK TRACKING:
+                # This list stores tuples of (u, v, amount_deducted) for every channel capacity modification
+                # made during the processing of this payment_task. Its purpose is to ensure that if the
+                # payment_task ultimately fails (payment_task.success == False), all these changes can be
+                # reverted in the main 'finally' block, thus ensuring atomicity for the payment attempt.
+                all_deducted_channels_for_task = [] 
+                # rollback_channels = [] # REMOVED: Replaced by all_deducted_channels_for_task
 
                 try:
                     total_fee = 0
@@ -820,7 +826,9 @@ def payment_worker(task_queue, result_queue, lock_manager, stop_event, simulatio
                             # temporarily deduct the amount from the channel
                             G[u][v]['capacity'] -= payment_task.amount
                             G[v][u]['capacity'] += payment_task.amount
-                            rollback_channels.append((u, v))  # record the channel that has been deducted
+                            # Record successful deduction for potential full rollback if task fails.
+                            all_deducted_channels_for_task.append((u, v, payment_task.amount)) 
+                            # rollback_channels.append((u, v)) # REMOVED
                             lock_manager.release_channel_lock((u, v))
 
                             # Update the usage frequency of the channel using EWMA
@@ -881,16 +889,19 @@ def payment_worker(task_queue, result_queue, lock_manager, stop_event, simulatio
                         else:
                             payment_task.fee = 0
                             # If any channel does not have enough capacity, the payment fails
-                            for u, v in rollback_channels:
-                                lock_manager.acquire_channel_lock((u, v))
-                                time.sleep(0.03)
-                                G[u][v]['capacity'] += payment_task.amount
-                                G[v][u]['capacity'] -= payment_task.amount
-                                lock_manager.release_channel_lock((u, v))
+                            # The rollback is now handled by the main finally block
+                            # for u, v in rollback_channels:
+                            #     lock_manager.acquire_channel_lock((u, v))
+                            #     time.sleep(0.03)
+                            #     G[u][v]['capacity'] += payment_task.amount
+                            #     G[v][u]['capacity'] -= payment_task.amount
+                            #     lock_manager.release_channel_lock((u, v))
 
                     elif split == 2:
-                        rollback_channels_all = []  # record channels that need to be rolled back   
-                        remain_amount = payment_task.amount
+                                # rollback_channels_all = [] # REMOVED: Replaced by all_deducted_channels_for_task
+                                # remain_amount here should be payment_task.amount for split == 2 logic,
+                                # as it's trying to fulfill the entire task amount via these paths.
+                                remain_amount = payment_task.amount
                         for p in range(len(execute_paths)):
 
                             if has_capacity == False:
@@ -915,22 +926,28 @@ def payment_worker(task_queue, result_queue, lock_manager, stop_event, simulatio
                                     break
                                 
                                 # temporarily deduct the amount from the channel
-                                G[u][v]['capacity'] -= execute_payment[p]
-                                G[v][u]['capacity'] += execute_payment[p]
+                                current_deducted_amount_split2 = execute_payment[p] # This might be capped by remain_amount later
+                                if remain_amount < execute_payment[p]: # This check was in original code
+                                    current_deducted_amount_split2 = remain_amount
+                                
+                                G[u][v]['capacity'] -= current_deducted_amount_split2
+                                G[v][u]['capacity'] += current_deducted_amount_split2
+                                # Record successful deduction for potential full rollback if task fails.
+                                all_deducted_channels_for_task.append((u, v, current_deducted_amount_split2)) 
 
-                                remain_amount -= execute_payment[p]
+                                remain_amount -= current_deducted_amount_split2 # Update remain_amount based on actual deduction
 
-                                if len(rollback_channels_all) < p + 1:
-                                    rollback_channels_all.append([])
+                                # if len(rollback_channels_all) < p + 1: # REMOVED
+                                #     rollback_channels_all.append([]) # REMOVED
 
-                                rollback_channels_all[p].append((u, v))  # record the channel that has been deducted
+                                # rollback_channels_all[p].append((u, v)) # REMOVED
 
                                 lock_manager.release_channel_lock((u, v))
                                 
                                 # Add the fees for both directions
-                                total_fee += (G[u][v]['fee'] + G[u][v]['rate'] * execute_payment[p])
-                                if remain_amount < 0:
-                                    break  
+                                total_fee += (G[u][v]['fee'] + G[u][v]['rate'] * current_deducted_amount_split2)
+                                if remain_amount <= 0: # Ensure it breaks if exact amount is met
+                                    break
 
                         # If all channels have enough capacity, the payment is successful
                         if has_capacity:
@@ -940,65 +957,62 @@ def payment_worker(task_queue, result_queue, lock_manager, stop_event, simulatio
                     
                         else:
                             payment_task.fee = 0
+                            # Rollback for split == 2 is now handled by the main finally block
+                            # pos = 0
+                            # roll_back_pos = []
+                            # while True:
+                            #     time.sleep(0.03)
+                            #     for i in range(len(rollback_channels_all)):
+                            #         if i in roll_back_pos:
+                            #             continue
+                            #         if pos >= len(rollback_channels_all[i]):
+                            #             roll_back_pos.append(i)
+                            #             continue
+                            #         u, v = rollback_channels_all[i][pos]
+                            #         try:
+                            #             lock_manager.acquire_channel_lock((u, v))
+                            #             G[u][v]['capacity'] += execute_payment[i]
+                            #             G[v][u]['capacity'] -= execute_payment[i]
+                            #         finally:
+                            #             lock_manager.release_channel_lock((u, v))
+                            #     if len(roll_back_pos) == len(rollback_channels_all):
+                            #         break
+                            #     pos += 1
 
-                            pos = 0  # current position in the rollback channels
-                            roll_back_pos = []  # record channels that have been rolled back
-
-                            while True:
-                                time.sleep(0.03)  # simulate processing time
-
-                                for i in range(len(rollback_channels_all)):
-                                    if i in roll_back_pos:
-                                        continue  # skip already rolled back channels
-
-                                    if pos >= len(rollback_channels_all[i]):
-                                        roll_back_pos.append(i)  # if the channel has been rolled back, add it to the list
-                                        continue
-
-                                    u, v = rollback_channels_all[i][pos]  # aquire the channel to be rolled back
-                                    try:
-                                        lock_manager.acquire_channel_lock((u, v))
-
-                                        # roll back the channel
-                                        G[u][v]['capacity'] += execute_payment[i]
-                                        G[v][u]['capacity'] -= execute_payment[i]
-                                    finally:
-                                        lock_manager.release_channel_lock((u, v))
-
-                                # if all channels have been rolled back, break the loop
-                                if len(roll_back_pos) == len(rollback_channels_all):
-                                    break
-
-                                pos += 1  # next channel to roll back
-
-                    else:
+                    else: # This is the (split == 1) case for execute_probing == 3
                         split_cont = [0, 1]
-                        payment_split_amount = []
-                        rollback_channels_all = []  # record channels that need to be rolled back
+                        payment_split_amount = [] # Stores amounts for paths in split_cont
                         min_succ_rate = float('inf')
+                        # rollback_channels_all_initial_split is REMOVED. Global rollback handles this.
 
-                        while True:
+                        # This loop determines the payment_split_amount for the initial attempt paths in 'split_cont'
+                        payment_split_amount_dict = {} # Using a dictionary for clarity: path_index -> amount
+                        while True: 
                             total_flow = sum(path[1] for path in candidate_paths[:split_cont[-1] + 1] if path[1] > 0)
                             if total_flow == 0:
                                 raise ValueError("Total flow is zero, cannot split payment.")
                             
-                            for i in split_cont: 
-
-                                # caulculate the split amount for each path
-                            
-                                split_amount = payment_task.amount * (candidate_paths[i][1] / total_flow)
-                                payment_split_amount.append(split_amount)
-
-                                # caulculate the success rate
+                            for path_idx_in_candidate_paths in split_cont:
+                                # Calculate the split amount for each path
+                                # candidate_paths[path_idx_in_candidate_paths][1] is the flow of this path
+                                split_amount_for_path = payment_task.amount * (candidate_paths[path_idx_in_candidate_paths][1] / total_flow)
+                                payment_split_amount_dict[path_idx_in_candidate_paths] = split_amount_for_path
+                                
+                                # Calculate the success rate (original logic)
                                 min_succ_rate = min(
-                                    min_succ_rate,
-                                    (candidate_paths[i][1] - split_amount) / candidate_paths[i][1]
+                                    min_succ_rate, # existing min_succ_rate
+                                    (candidate_paths[path_idx_in_candidate_paths][1] - split_amount_for_path) / candidate_paths[path_idx_in_candidate_paths][1]
                                 )
 
                             if min_succ_rate < float(sys.argv[7]) and len(split_cont) < len(candidate_paths) and len(split_cont) < float(sys.argv[8]):
-                                payment_split_amount = []
+                                payment_split_amount_dict.clear() # Clear amounts as we are re-calculating
                                 min_succ_rate = float('inf')
-                                split_cont.append(len(split_cont))  # add a new path to the split_cont list
+                                # Add the next path from candidate_paths to split_cont by its index
+                                if len(split_cont) < len(candidate_paths): # Ensure we don't go out of bounds
+                                     # The new path to add is the one at index len(split_cont) in candidate_paths
+                                    split_cont.append(len(split_cont)) # This logic seems to assume split_cont contains contiguous indices from 0.
+                                else: # Cannot add more paths
+                                    break 
                                 continue
                             else:
                                 break
@@ -1007,9 +1021,14 @@ def payment_worker(task_queue, result_queue, lock_manager, stop_event, simulatio
                         # Calculate the total fee for each path
                         paths_with_fees = []
                         # Start iterating from candidate_paths[split_amount[-1] + 1]
-                        start_index = split_cont[-1] + 1 if split_cont else 0  # Ensure split_amount is not empty
-                        for path, flow, scores, total_fees in candidate_paths[start_index:]:
-                            paths_with_fees.append((path, flow, total_fees))
+                        # Ensure split_cont is not empty before trying to access its last element
+                        start_index_for_probing = 0
+                        if split_cont:
+                            start_index_for_probing = split_cont[-1] + 1
+                        
+                        for path_data_tuple in candidate_paths[start_index_for_probing:]:
+                            # path_data_tuple is (path, flow, score, total_fee_for_path)
+                            paths_with_fees.append((path_data_tuple[0], path_data_tuple[1], path_data_tuple[3]))
 
                         # Sort paths by fee (cheapest first)
                         paths_with_fees.sort(key=lambda x: x[2])
@@ -1030,226 +1049,225 @@ def payment_worker(task_queue, result_queue, lock_manager, stop_event, simulatio
                         rollback_channels_all = [[] for _ in range(len(split_cont))]  # initialize rollback channels for each path
                         while True:
                             time.sleep(0.03)
-                            for i in split_cont:
+                            # Iterate through the paths chosen for the initial split attempt
+                            # Original 'split_cont' holds indices relative to 'candidate_paths'
+                            # Original 'payment_split_amount' was a list, now using payment_split_amount_dict
+                            active_initial_split_paths = list(split_cont) # Paths we are currently trying
 
-                                if len(split_cont) == 0:       
-                                        break
-                                if pos >= len(candidate_paths[i][0]) - 1:
-                                    split_cont.remove(i)
+                            for path_idx_in_candidates in active_initial_split_paths:
+                                if pos >= len(candidate_paths[path_idx_in_candidates][0]) - 1: # Check if path ended
+                                    if path_idx_in_candidates in split_cont: # remove if still there
+                                       split_cont.remove(path_idx_in_candidates)
                                     continue
 
-                                u, v = candidate_paths[i][0][pos], candidate_paths[i][0][pos + 1]
+                                u, v = candidate_paths[path_idx_in_candidates][0][pos], candidate_paths[path_idx_in_candidates][0][pos + 1]
+                                current_path_amount_to_deduct = payment_split_amount_dict[path_idx_in_candidates]
                                 
                                 lock_manager.acquire_channel_lock((u, v))
-                                channels.append((u, v))  # record the channel that has been locked
-                                # check if the channel has enough capacity
-                                if G[u][v]['capacity'] < payment_split_amount[i]:
+                                # channels.append((u, v)) # 'channels' var seems unused for locking/unlocking now
+                                
+                                if G[u][v]['capacity'] < current_path_amount_to_deduct:
                                     has_capacity = False
-                                    payment_task.message = f"Channel {u}-{v} has insufficient capacity: {G[u][v]['capacity']} < {payment_task.amount}"
+                                    payment_task.message = f"Channel {u}-{v} insufficient for initial split: {G[u][v]['capacity']} < {current_path_amount_to_deduct}"
                                     lock_manager.release_channel_lock((u, v))
-                                    roll_back_pos.append(i)
-                                    split_cont.remove(i)
-                                    continue
-
-                                # temporarily deduct the amount from the channel
-                                G[u][v]['capacity'] -= payment_split_amount[i]
-                                G[v][u]['capacity'] += payment_split_amount[i]
-
-                                rollback_channels_all[i].append((u, v))  # record the channel that has been deducted
+                                    if path_idx_in_candidates in split_cont: # Mark for removal / stop processing this path
+                                        roll_back_pos.append(path_idx_in_candidates) 
+                                        split_cont.remove(path_idx_in_candidates)
+                                    # Since one path segment failed, the whole initial split group fails for atomicity.
+                                    # We need to break all loops for this initial split and proceed to fallback.
+                                    # The 'has_capacity = False' will trigger the fallback logic.
+                                    break # Break from iterating segments of this path
+                                
+                                G[u][v]['capacity'] -= current_path_amount_to_deduct
+                                G[v][u]['capacity'] += current_path_amount_to_deduct
+                                # Record successful deduction for potential full rollback if task fails.
+                                all_deducted_channels_for_task.append((u, v, current_path_amount_to_deduct))
                                 lock_manager.release_channel_lock((u, v))
 
                                 # Update the usage frequency of the channel using EWMA
-                                now = time.time()
+                                now_init_split = time.time()
                                 if G[u][v]['last_used'] is not None:
-                                    # Calculate the time difference since the last usage
-                                    time_diff = now - G[u][v]['last_used']
-                                    if time_diff > 0:
-                                        # Apply EWMA formula
-                                        previous_frequency = G[u][v].get('usage_frequency', 0)
-                                        current_frequency = 1 / time_diff
-                                        G[u][v]['usage_frequency'] = alpha * current_frequency + (1 - alpha) * previous_frequency
+                                    time_diff_init_split = now_init_split - G[u][v]['last_used']
+                                    if time_diff_init_split > 0:
+                                        previous_frequency_init_split = G[u][v].get('usage_frequency', 0)
+                                        current_frequency_init_split = 1 / time_diff_init_split
+                                        G[u][v]['usage_frequency'] = alpha * current_frequency_init_split + (1 - alpha) * previous_frequency_init_split
                                 else:
-                                    # If this is the first usage, set the frequency to a default value
                                     G[u][v]['usage_frequency'] = 1
+                                G[u][v]['last_used'] = now_init_split
                                 
-                                # Update the last used timestamp
-                                G[u][v]['last_used'] = now
-                                
-                                # Add the fees for both directions
-                                total_fee += (G[u][v]['fee'] + G[u][v]['rate'] * payment_split_amount[i])
+                                total_fee += (G[u][v]['fee'] + G[u][v]['rate'] * current_path_amount_to_deduct)
+                            
+                            if not has_capacity: # If a segment failed, break from iterating paths
+                                break 
 
-                            if len(split_cont) == 0:  
-                                    break
+                            if not split_cont: # All paths processed or removed
+                                break
                             pos += 1
+                        # End of initial split attempt loop (iterating over segments via `pos`)
 
-                        # If all channels have enough capacity, the payment is successful
-                        if has_capacity:
+                        if has_capacity: # Initial split attempt was successful
                             payment_task.success = True
-                            payment_task.fee = total_fee
-                            payment_task.message = "Payment successful"
+                            payment_task.fee = total_fee # total_fee has accumulated fees for successful initial split
+                            payment_task.message = "Payment successful via initial split."
+                            # Transaction timestamp recording (as in original successful single path)
+                            timestamp_success = time.time()
+                            # Assuming payment_task.path is set to the first path of the split for logging purposes, or handle differently
+                            # For now, let's assume it's not set or needs a representative path.
+                            # If multiple paths, this logging needs adjustment.
+                            # Example: log for the first path in the successful split_cont
+                            if candidate_paths and split_cont: # ensure candidate_paths and split_cont are not empty
+                                first_successful_split_path_nodes = candidate_paths[split_cont[0]][0]
+                                if first_successful_split_path_nodes:
+                                    u_log, v_log = first_successful_split_path_nodes[0], first_successful_split_path_nodes[-1]
+                                    if u_log not in transaction_timestamps: transaction_timestamps[u_log] = {}
+                                    if v_log not in transaction_timestamps[u_log]: transaction_timestamps[u_log][v_log] = []
+                                    transaction_timestamps[u_log][v_log].append(timestamp_success)
+                                    if len(transaction_timestamps[u_log][v_log]) > 100: transaction_timestamps[u_log][v_log].pop(0)
+                                    # And for reverse? Original code did this for payment_task.path
+                        else: 
+                            # has_capacity is False, meaning the initial split attempt failed.
+                            # Fallback logic below will be executed.
+                            # payment_task.success is already False or will be confirmed False by fallback.
+                            # total_fee accumulated from the failed initial attempt will be wiped by the final rollback.
+                            pass # Proceed to fallback
 
-                            # Record the transaction timestamp for each channel in the path
-                            timestamp = time.time()
-                            
-                            u, v = payment_task.path[0], payment_task.path[-1]
-                            if u not in transaction_timestamps:
-                                transaction_timestamps[u] = {}
-                            if v not in transaction_timestamps[u]:
-                                transaction_timestamps[u][v] = []
-                            
-                            # Append the timestamp
-                            transaction_timestamps[u][v].append(timestamp)
+                        # Fallback logic is only entered if has_capacity is False after the initial split attempt.
+                        if not has_capacity:
+                            payment_task.success = False # Explicitly ensure if not already.
+                            # --- START OF PART B: Fallback Logic ---
+                            # B.i.A: Determine Path Set and Amounts for Fallback
+                                chosen_fallback_paths = []
+                                # Fallback attempts to satisfy the *original* payment_task.amount.
+                                # Any partial success/failure of the initial split is complex to reconcile here without more state.
+                                # The global `all_deducted_channels_for_task` will correctly roll back *all* deductions if the payment ultimately fails.
+                                current_remain_amount_for_fallback = payment_task.amount 
 
-                            # Limit the number of stored timestamps to avoid memory issues
-                            if len(transaction_timestamps[u][v]) > 100:
-                                transaction_timestamps[u][v].pop(0)
-                            
-                            v, u = payment_task.path[0], payment_task.path[-1]
-                            if u not in transaction_timestamps:
-                                transaction_timestamps[u] = {}
-                            if v not in transaction_timestamps[u]:
-                                transaction_timestamps[u][v] = []
-                            
-                            # Append the timestamp
-                            transaction_timestamps[u][v].append(timestamp)
+                                # Ensure task_ids for probing are available from the initial split attempt's probing phase
+                                # This assumes 'task_ids' from the 'else' block (line ~1030 in original) is in scope and contains relevant IDs.
+                                if 'task_ids' in locals() and task_ids: # Check if task_ids exists and is not empty
+                                    wait_for_all_tasks(task_ids) 
+                                    with probing_results_lock:
+                                        # Filter for task_ids that are actually in probing_results
+                                        probed_results_list = [probing_results[tid] for tid in task_ids if tid in probing_results]
+                                else:
+                                    probed_results_list = [] # No tasks to wait for or no results
 
-                            # Limit the number of stored timestamps to avoid memory issues
-                            if len(transaction_timestamps[u][v]) > 100:
-                                transaction_timestamps[u][v].pop(0)
-                        else:
-                            has_capacity = True
-                            
-                            # If any channel does not have enough capacity, the payment fails
-                            pos = 0  # current position in the rollback channels
-
-                            while True:
-                                time.sleep(0.03)  # simulate processing time
-
-                                for i in roll_back_pos:  # only roll back the channels that have been rolled back
-                                    if pos >= len(rollback_channels_all[i]):
-                                        continue  # if the channel has been rolled back, skip it
-
-                                    u, v = rollback_channels_all[i][pos]  # aquire the channel to be rolled back
-                                    try:
-                                        lock_manager.acquire_channel_lock((u, v))
-
-                                        if i < len(payment_split_amount):
-                                            G[u][v]['capacity'] += payment_split_amount[i]
-                                            G[v][u]['capacity'] -= payment_split_amount[i]
-                                        else:
-                                            G[u][v]['capacity'] += execute_payment[i - len(payment_split_amount)]
-                                            G[v][u]['capacity'] -= execute_payment[i - len(payment_split_amount)]
-                                    finally:
-                                        lock_manager.release_channel_lock((u, v))
-
-                                # if all channels have been rolled back, break the loop 
-                                if all(pos >= len(rollback_channels_all[i]) for i in roll_back_pos):
-                                    break
-
-                                pos += 1  # proceed to the next channel to roll back
-                            
-                            # wait for all probing tasks to complete
-                            wait_for_all_tasks(task_ids)
-
-                            # aquire the probing results
-                            with probing_results_lock:
-                                results = [probing_results[task_id] for task_id in task_ids]
-                            # print("Probing results:", len(results))
-
-                            for path in results:
-                                execute_paths.append(path["path"])
-                                execute_payment.append(path["amount"])
+                                for probed_path_data in probed_results_list: 
+                                    if current_remain_amount_for_fallback <= 0:
+                                        break
+                                    # Apply split_rate to the available amount on the probed path
+                                    potential_send_amount = probed_path_data["amount"] * (1 - split_rate)
+                                    amount_for_this_path = min(current_remain_amount_for_fallback, potential_send_amount)
+                                    
+                                    if amount_for_this_path > 0:
+                                        chosen_fallback_paths.append((probed_path_data["path"], amount_for_this_path))
+                                    current_remain_amount_for_fallback -= amount_for_this_path
                                 
-                            for p in range(len(execute_paths)):
-                                rollback_channels_all.append([])
-                                if has_capacity == False:
-                                    break
+                                # B.i.B: Simulate Grouped "Concurrent" Check
+                                fallback_channels_to_lock = []
+                                all_checks_pass_fallback = True # Assume success until a check fails
+                                
+                                acquired_locks_fallback = [] # Keep track of locks acquired in this block
 
-                                for i in range(len(execute_paths[p]) - 1):
-
-                                    time.sleep(0.03)
-                                    u, v = execute_paths[p][i], execute_paths[p][i+1]
+                                if chosen_fallback_paths: 
+                                    for path_info, amount_on_path_info in chosen_fallback_paths:
+                                        for u_fb, v_fb in zip(path_info[:-1], path_info[1:]):
+                                            # Add both forward and reverse channel for locking
+                                            fallback_channels_to_lock.append(tuple(sorted((u_fb, v_fb))))
                                     
-                                    lock_manager.acquire_channel_lock((u, v))
-                                    channels.append((u, v))  # record the channel that has been locked
+                                    # Deduplicate and sort for consistent lock acquisition order
+                                    fallback_channels_to_lock = sorted(list(set(fallback_channels_to_lock)))
                                     
-                                    if remain_amount < execute_payment[p]:
-                                        execute_payment[p] = remain_amount
-
-                                    # check if the channel has enough capacity
-                                    if G[u][v]['capacity'] < execute_payment[p]:
-                                        has_capacity = False
-                                        payment_task.message = f"Channel {u}-{v} has insufficient capacity: {G[u][v]['capacity']} < {payment_task.amount}"
-                                        lock_manager.release_channel_lock((u, v))
-                                        break
-                                    
-                                    # temporarily deduct the amount from the channel
-                                    G[u][v]['capacity'] -= execute_payment[p]
-                                    G[v][u]['capacity'] += execute_payment[p]
-
-                                    remain_amount -= execute_payment[p]
-
-                                    rollback_channels_all[-1].append((u, v))  # record the channel that has been deducted
-
-                                    lock_manager.release_channel_lock((u, v))
-                                    
-                                    # Add the fees for both directions
-                                    total_fee += (G[u][v]['fee'] + G[u][v]['rate'] * execute_payment[p])
-                                    if remain_amount < 0:
-                                        break  
-
-                            # If all channels have enough capacity, the payment is successful
-                            if has_capacity:
-                                payment_task.success = True
-                                payment_task.fee = total_fee
-                                payment_task.message = "Payment successful"
-                        
-                            else:
-                                payment_task.fee = 0
-
-                                pos = 0  # current position in the rollback channels
-                                roll_back_pos = []  # record channels that have been rolled back
-
-                                while True:
-                                    time.sleep(0.03)  # simulate processing time
-
-                                    for i in range(len(rollback_channels_all)):
-                                        if i in roll_back_pos:
-                                            continue  # skip already rolled back channels
-
-                                        if pos >= len(rollback_channels_all[i]):
-                                            roll_back_pos.append(i)  # if the channel has been rolled back, add it to the list
-                                            continue
-
-                                        u, v = rollback_channels_all[i][pos]  # aquire the channel to be rolled back
+                                    try:
+                                        for channel_tuple_fb in fallback_channels_to_lock:
+                                            # Assuming acquire_channel_lock can handle a tuple (u,v)
+                                            # Or, it might require separate u,v. The ChannelLockManager uses a single channel tuple.
+                                            lock_manager.acquire_channel_lock(channel_tuple_fb)
+                                            acquired_locks_fallback.append(channel_tuple_fb)
                                         
-                                        try:
-                                            if i < len(payment_split_amount):
-                                                    lock_manager.acquire_channel_lock((u, v))
-                                                    G[u][v]['capacity'] += payment_split_amount[i]
-                                                    G[v][u]['capacity'] -= payment_split_amount[i]
-                                            else:
-                                                lock_manager.acquire_channel_lock((u, v))
-                                                G[u][v]['capacity'] += execute_payment[i - len(payment_split_amount)]
-                                                G[v][u]['capacity'] -= execute_payment[i- len(payment_split_amount)]
-                                        finally:
-                                            lock_manager.release_channel_lock((u, v))
+                                        # Perform Capacity Checks (now that all relevant locks are held)
+                                        for path_fb, amount_on_path_fb in chosen_fallback_paths:
+                                            for u_seg_fb, v_seg_fb in zip(path_fb[:-1], path_fb[1:]):
+                                                time.sleep(0.03) # Keep existing delay
+                                                if G[u_seg_fb][v_seg_fb]['capacity'] < amount_on_path_fb:
+                                                    all_checks_pass_fallback = False
+                                                    payment_task.message = f"Fallback channel {u_seg_fb}-{v_seg_fb} insufficient: {G[u_seg_fb][v_seg_fb]['capacity']} < {amount_on_path_fb}"
+                                                    break # Stop checking this path
+                                            if not all_checks_pass_fallback:
+                                                break # Stop checking other paths
 
-                                    # if all channels have been rolled back, break the loop
-                                    if len(roll_back_pos) == len(rollback_channels_all):
-                                        break
+                                        # B.i.C: Commit or Group Rollback (for this fallback attempt only)
+                                        if all_checks_pass_fallback:
+                                            current_fallback_attempt_fee = 0 
+                                            for path_fb_commit, amount_on_path_commit in chosen_fallback_paths:
+                                                for u_commit, v_commit in zip(path_fb_commit[:-1], path_fb_commit[1:]):
+                                                    G[u_commit][v_commit]['capacity'] -= amount_on_path_commit
+                                                    G[v_commit][u_commit]['capacity'] += amount_on_path_commit
+                                                    all_deducted_channels_for_task.append((u_commit, v_commit, amount_on_path_commit))
+                                                    
+                                                    # Update usage frequency, last_used (alpha is defined earlier)
+                                                    now_commit = time.time()
+                                                    if G[u_commit][v_commit]['last_used'] is not None:
+                                                        time_diff_commit = now_commit - G[u_commit][v_commit]['last_used']
+                                                        if time_diff_commit > 0:
+                                                            prev_freq_commit = G[u_commit][v_commit].get('usage_frequency', 0)
+                                                            curr_freq_commit = 1 / time_diff_commit
+                                                            G[u_commit][v_commit]['usage_frequency'] = alpha * curr_freq_commit + (1 - alpha) * prev_freq_commit
+                                                    else:
+                                                        G[u_commit][v_commit]['usage_frequency'] = 1
+                                                    G[u_commit][v_commit]['last_used'] = now_commit
+                                                    current_fallback_attempt_fee += (G[u_commit][v_commit]['fee'] + G[u_commit][v_commit]['rate'] * amount_on_path_commit)
 
-                                    pos += 1  # next channel to roll back
-
+                                            if current_remain_amount_for_fallback <= 0: 
+                                                payment_task.success = True 
+                                                payment_task.fee = current_fallback_attempt_fee # Fees from initial failed split are wiped by global rollback
+                                                payment_task.message = "Payment successful via fallback paths."
+                                            else: 
+                                                # Fallback attempted but couldn't cover the full remaining amount
+                                                payment_task.success = False 
+                                                payment_task.message = f"Fallback paths covered partial amount ({payment_task.amount - current_remain_amount_for_fallback}). Remainder: {current_remain_amount_for_fallback}"
+                                                # Fee for partial success will be wiped by global rollback if payment_task.success is False
+                                        # else (all_checks_pass_fallback is False): No capacities were changed for this group.
+                                        # payment_task.message is already set. payment_task.success remains False.
+                                    
+                                    finally:
+                                        # B.i.D: Release Locks
+                                        for channel_tuple_fb_release in acquired_locks_fallback: 
+                                            lock_manager.release_channel_lock(channel_tuple_fb_release)
+                                else: # No chosen_fallback_paths (e.g. probed_results_list was empty or amounts were too small)
+                                    payment_task.success = False 
+                                    if not probed_results_list:
+                                        payment_task.message = "No probed paths available for fallback or probing failed."
+                                    else:
+                                        payment_task.message = "Fallback paths not chosen (e.g. amounts too small after split_rate) or no remaining amount."
+                            # --- END OF PART B (Fallback logic for execute_probing == 3 if initial split fails) ---
                            
                 finally:
-                    # Release locks for all channels on the path
+                    # Part c: Consolidate Final Rollback
+                    if not payment_task.success:
+                        # The order in all_deducted_channels_for_task is the order of deduction. Reversing it is safer for rollback.
+                        for r_u, r_v, r_amount in reversed(all_deducted_channels_for_task):
+                            try:
+                                lock_manager.acquire_channel_lock((r_u, r_v))
+                                time.sleep(0.03) 
+                                G[r_u][r_v]['capacity'] += r_amount
+                                G[r_v][r_u]['capacity'] -= r_amount
+                            finally:
+                                lock_manager.release_channel_lock((r_u, r_v))
+                        payment_task.fee = 0 
+                    
+                    # Part d: all_deducted_channels_for_task is re-initialized at the start of the main try block.
+
+                    # Old final lock release logic - Needs review if 'channels' variable is still relevant
+                    # If 'channels' was for the primary path, and it failed, its locks should have been released.
+                    # If the new fallback used 'acquired_locks_fallback', those are released within the fallback block.
+                    # This original loop might be redundant or needs to be adapted.
                     '''
-                    for channel in channels:
+                    for channel in channels: 
                         lock_manager.release_channel_lock(channel)
                     '''
                     
-                
             except Exception as e:
                 print(f"Error processing payment: {str(e)}")    
                 payment_task.message = f"Error processing payment: {str(e)}"
