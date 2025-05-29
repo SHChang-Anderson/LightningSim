@@ -17,7 +17,7 @@ import shutil
 
 # 'param1': 1.0611725984543918, 'param2': 60.27367308783179, 'param3': 7.360643237372914, 'param4': 0.3626886219630006, 'param5': 2} 
 
-
+'''
 import sys
 sys.argv = [
     "simulator_thread.py",  # Script name
@@ -31,7 +31,7 @@ sys.argv = [
     str(0.2393143708198513), # Parameter 4
     str(2) # Parameter 5
 ]
-
+'''
 np.random.seed(42)
 
 G = nx.DiGraph()
@@ -53,6 +53,9 @@ transaction_timestamps = {}
 # Trust pairs for nodes
 trust_pairs = {}
 
+reservations_lock = threading.Lock()  # protects access to active_reservations
+active_reservations = {}  # save active reservations
+
 def add_trust_pair(trust_pairs, node1, node2):
     """
     Add a trust relationship between two nodes.
@@ -65,6 +68,43 @@ def add_trust_pair(trust_pairs, node1, node2):
     if node1 not in trust_pairs:
         trust_pairs[node1] = set()
     trust_pairs[node1].add(node2)
+
+# check if the path has enough capacity for the reservation
+def check_reservation_conflict(G, path, amount_to_reserve, active_reservations, reservations_lock):
+    with reservations_lock:
+        for i in range(len(path) - 1):
+            u, v = path[i], path[i+1]
+            total_reserved = sum(
+                res['amount'] for res in active_reservations.values()
+                if res['status'] == 'active' and (u, v) in zip(res['path'], res['path'][1:])
+            )
+            available_capacity = G[u][v].get('capacity', 0) - G[u][v].get('reserved_capacity', 0)
+            if total_reserved + amount_to_reserve > available_capacity:
+                print(f"Reservation conflict: Path segment ({u}, {v}) reserved {total_reserved}, "
+                      f"requested {amount_to_reserve}, available {available_capacity}")
+                return False
+    return True
+
+# clean expired reservations
+def clean_expired_reservations(active_reservations, reservations_lock, timeout=0.05):
+    with reservations_lock:
+        expired = [
+            rid for rid, res in active_reservations.items()
+            if res['status'] in ['active', 'pending_commit'] and (time.time() - res['timestamp'] > timeout)
+        ]
+        for rid in expired:
+            reservation = active_reservations[rid]
+            reservation['status'] = 'timed_out'
+            path = reservation['path']
+            amount = reservation['amount']
+            for i in range(len(path) - 1):
+                u, v = path[i], path[i+1]
+                if (u, v) in G:
+                    G[u][v]['reserved_capacity'] = G[u][v].get('reserved_capacity', 0) - amount
+                    if G[u][v]['reserved_capacity'] < 0:
+                        G[u][v]['reserved_capacity'] = 0
+            del active_reservations[rid]
+            print(f"Cleaned expired reservation {rid} for path {path}")
 
 def remove_trust_pair(trust_pairs, node1, node2):
     """
@@ -742,53 +782,91 @@ def payment_worker(task_queue, result_queue, lock_manager, stop_event, simulatio
                         if (candidate_paths[0][1] - payment_task.amount) / candidate_paths[0][1] < split_rate:
                             split = 1  
 
-                execute_paths = []
-                execute_payment = []
-                if execute_probing == 4:
+                task_path_reservations_info = []  # Stores (path_tuple, reservation_id, amount_reserved_on_path)
 
-                    candidate_paths = get_paths_from_routing_table(
+                if execute_probing == 4:
+                    # This is the "Reservation Phase"
+                    
+                    # clean_expired_reservations(active_reservations, reservations_lock, timeout=0.05)
+                    
+                    candidate_paths_from_routing = get_paths_from_routing_table(
                         f"../routing_table/node{payment_task.sender}",
                         payment_task.sender,
                         payment_task.receiver
                     )
 
-                    # calculate the total fee for each path
                     paths_with_fees = []
-                    for path, flow, base_fee, fee_rate in candidate_paths:
-                        total_fee = base_fee + (fee_rate * payment_task.amount)
-                        paths_with_fees.append((path, flow, total_fee))
-
-                    # sort paths by fee
-                    paths_with_fees.sort(key=lambda x: x[2]) 
-
-                    # upadate the path with the lowest fee
-                    candidate_paths = [(path, flow) for path, flow, _ in paths_with_fees]
+                    for path_rt, flow_rt, base_fee_rt, fee_rate_rt in candidate_paths_from_routing:
+                        total_fee_rt = base_fee_rt + (fee_rate_rt * payment_task.amount)
+                        paths_with_fees.append((path_rt, flow_rt, total_fee_rt))
                     
-                    remain_amount = payment_task.amount
-                    iter = 0
+                    paths_with_fees.sort(key=lambda x: x[2])  # Sort by estimated fee
                     
-                    for path, flow in candidate_paths:  
+                    candidate_paths_for_reservation = [(path_data[0], path_data[1]) for path_data in paths_with_fees]
+                    
+                    remain_amount = payment_task.amount 
 
-                        if (remain_amount < 0):
+                    for path, flow_ignored in candidate_paths_for_reservation: 
+                        if remain_amount <= 0:
                             break
 
-                        try:
-                            global G
-                            # Update channel capacities
-                            tpamount = float('inf')
+                        
+
+                        current_path_min_capacity = float('inf')
+                        is_valid_path = True
+                        if not path: 
+                            is_valid_path = False
+                        else:
                             for i in range(len(path) - 1):
-                                time.sleep(0.06)
-                                u, v = path[i], path[i + 1]
-                                tpamount = min(tpamount, G[u][v]['capacity'])
+                                time.sleep(0.03)
+                                u, v = path[i], path[i+1]
+                                try:
+                                    capacity = G[u][v]['capacity'] - G[u][v].get('reserved_capacity', 0)
+                                    current_path_min_capacity = min(current_path_min_capacity, capacity)
+                                except KeyError: 
+                                    current_path_min_capacity = 0
+                                    is_valid_path = False
+                                    break 
+                                if capacity <= 0:
+                                    is_valid_path = False
+                                    break
+                        
+                        if not is_valid_path or current_path_min_capacity == float('inf'): 
+                            print(f"Invalid path {path} for payment {payment_task.payment_id}. Skipping reservation.")
+                            continue
 
-                            execute_paths.append(path)
-                            execute_payment.append(tpamount)
-                            remain_amount -= tpamount
+                        amount_to_reserve = min(current_path_min_capacity, remain_amount)
 
-                        except Exception as e:
-                            probing_task.message = f"Error probing path: {str(e)}"
-                            break
+                        if amount_to_reserve > 0:
+                            path_tuple = tuple(path) 
+                            payment_id_str = str(payment_task.payment_id) 
+                            reservation_id = f"{payment_id_str}_{'_'.join(map(str, path_tuple))}"
+                            
+                            with reservations_lock:
+                                reservation_entry = {
+                                    'path': path_tuple,
+                                    'amount': amount_to_reserve,
+                                    'task_id': payment_id_str,
+                                    'timestamp': time.time(),
+                                    'status': 'active'
+                                }
+                            active_reservations[reservation_id] = reservation_entry
                     
+                            for i in range(len(path) - 1):
+                                u, v = path[i], path[i+1]
+                                lock_manager.acquire_channel_lock((u, v))
+                                try:
+                                    G[u][v]['reserved_capacity'] = G[u][v].get('reserved_capacity', 0) + amount_to_reserve
+                                finally:
+                                    lock_manager.release_channel_lock((u, v))
+                            
+                            task_path_reservations_info.append((path_tuple, reservation_id, amount_to_reserve))
+                            remain_amount -= amount_to_reserve
+                    if remain_amount > 0:
+                        payment_task.message = f"Insufficient capacity to reserve {remain_amount} satoshis for payment {payment_task.payment_id}."
+                        payment_task.success = False
+                        payment_task.fee = 0
+
                     split = 2
                         
 
@@ -898,71 +976,75 @@ def payment_worker(task_queue, result_queue, lock_manager, stop_event, simulatio
                             #     lock_manager.release_channel_lock((u, v))
 
                     elif split == 2:
-                                # rollback_channels_all = [] # REMOVED: Replaced by all_deducted_channels_for_task
-                                # remain_amount here should be payment_task.amount for split == 2 logic,
-                                # as it's trying to fulfill the entire task amount via these paths.
-                        remain_amount = payment_task.amount
-                        for p in range(len(execute_paths)):
-                            if not has_capacity or remain_amount <= 0:
-                                break
+                            
+                            if remain_amount > 0:
+                                break # No need to proceed if we couldn't reserve enough capacity
 
-                            current_deducted_amount_split2 = execute_payment[p]
-                            if remain_amount < execute_payment[p]:
-                                current_deducted_amount_split2 = remain_amount
+                            total_successfully_deducted_amount = 0.0
 
-                            path_success = True
-                            for i in range(len(execute_paths[p]) - 1):
-                                time.sleep(0.03)
-                                u, v = execute_paths[p][i], execute_paths[p][i+1]
-                                lock_manager.acquire_channel_lock((u, v))
-                                channels.append((u, v))
-                                # check if the channel has enough capacity
-                                if G[u][v]['capacity'] < current_deducted_amount_split2:
-                                    has_capacity = False
-                                    payment_task.message = f"Channel {u}-{v} has insufficient capacity: {G[u][v]['capacity']} < {current_deducted_amount_split2}"
-                                    lock_manager.release_channel_lock((u, v))
-                                    path_success = False
+                            for path_tuple, reservation_id, reserved_amount_for_path in task_path_reservations_info:
+                                if total_successfully_deducted_amount >= payment_task.amount:
                                     break
-                                G[u][v]['capacity'] -= current_deducted_amount_split2
-                                G[v][u]['capacity'] += current_deducted_amount_split2
-                                all_deducted_channels_for_task.append((u, v, current_deducted_amount_split2))
-                                lock_manager.release_channel_lock((u, v))
-                                total_fee += (G[u][v]['fee'] + G[u][v]['rate'] * current_deducted_amount_split2)
 
-                            if path_success:
-                                remain_amount -= current_deducted_amount_split2
+                                with reservations_lock:
+                                    reservation_entry = active_reservations.get(reservation_id)
+                                    if not reservation_entry or reservation_entry['task_id'] != str(payment_task.payment_id) or reservation_entry['status'] != 'active':
+                                        continue
+
+                                    amount_to_deduct = min(reserved_amount_for_path, payment_task.amount - total_successfully_deducted_amount)
+
+                                    path_fee_contribution = 0.0
+                                    success = True
+                                    for i in range(len(path_tuple) - 1):
+                                        time.sleep(0.03)  # Simulate some delay for channel lock acquisition
+                                        u, v = path_tuple[i], path_tuple[i+1]
+                                        lock_manager.acquire_channel_lock((u, v))
+                                        try:
+                                            if G[u][v]['capacity'] < amount_to_deduct:
+                                                success = False
+                                                payment_task.message = f"Insufficient capacity on {u}-{v}"
+                                                break
+
+                                            G[u][v]['reserved_capacity'] = G[u][v].get('reserved_capacity', 0) - amount_to_reserve
+
+                                            G[u][v]['capacity'] -= amount_to_deduct
+                                            if (v, u) in G[v]:
+                                                G[v][u]['capacity'] += amount_to_deduct
+                                            all_deducted_channels_for_task.append((u, v, amount_to_deduct))
+
+                                            now = time.time()
+                                            if G[u][v]['last_used'] is not None:
+                                                time_diff = now - G[u][v]['last_used']
+                                                if time_diff > 0:
+                                                    previous_frequency = G[u][v].get('usage_frequency', 0)
+                                                    current_frequency = 1 / time_diff
+                                                    G[u][v]['usage_frequency'] = alpha * current_frequency + (1 - alpha) * previous_frequency
+                                            else:
+                                                G[u][v]['usage_frequency'] = 1
+                                            G[u][v]['last_used'] = now
+                                            path_fee_contribution += (G[u][v]['fee'] + G[u][v]['rate'] * amount_to_deduct)
+
+                                        finally:
+                                            lock_manager.release_channel_lock((u, v))
+
+                                    if success:
+                                        total_successfully_deducted_amount += amount_to_deduct
+                                        total_fee += path_fee_contribution
+                                        active_reservations[reservation_id]['status'] = 'committed'
+                                        active_reservations[reservation_id]['committed_amount'] = amount_to_deduct
+                                        del active_reservations[reservation_id]
+                                    else:
+                                        active_reservations[reservation_id]['status'] = 'failed_commit'
+
+                            if total_successfully_deducted_amount >= payment_task.amount:
+                                payment_task.success = True
+                                payment_task.message = "Payment successful"
+                                payment_task.fee = total_fee
                             else:
-                                break
+                                payment_task.success = False
+                                payment_task.message = f"Payment failed. Collected: {total_successfully_deducted_amount} of {payment_task.amount}"
+                                payment_task.fee = 0
 
-                        # If all channels have enough capacity, the payment is successful
-                        if has_capacity:
-                            payment_task.success = True
-                            payment_task.fee = total_fee
-                            payment_task.message = "Payment successful"
-                    
-                        else:
-                            payment_task.fee = 0
-                            # Rollback for split == 2 is now handled by the main finally block
-                            # pos = 0
-                            # roll_back_pos = []
-                            # while True:
-                            #     time.sleep(0.03)
-                            #     for i in range(len(rollback_channels_all)):
-                            #         if i in roll_back_pos:
-                            #             continue
-                            #         if pos >= len(rollback_channels_all[i]):
-                            #             roll_back_pos.append(i)
-                            #             continue
-                            #         u, v = rollback_channels_all[i][pos]
-                            #         try:
-                            #             lock_manager.acquire_channel_lock((u, v))
-                            #             G[u][v]['capacity'] += execute_payment[i]
-                            #             G[v][u]['capacity'] -= execute_payment[i]
-                            #         finally:
-                            #             lock_manager.release_channel_lock((u, v))
-                            #     if len(roll_back_pos) == len(rollback_channels_all):
-                            #         break
-                            #     pos += 1
 
                     else: # This is the (split == 1) case for execute_probing == 3
                         split_cont = [0, 1]
@@ -1262,7 +1344,7 @@ def payment_worker(task_queue, result_queue, lock_manager, stop_event, simulatio
 
 
 # Simulate threaded payments with Poisson arrival
-def simulate_threaded_payments_poisson(payment_tasks, probing_task, num_threads=20, simulation_duration=10):
+def simulate_threaded_payments_poisson(payment_tasks, probing_task, num_threads=20, simulation_duration=30):
     """
     Simulate parallel payments in the Lightning Network using multiple threads.
     Payments arrive according to a Poisson process.
@@ -1341,6 +1423,11 @@ def simulate_threaded_payments_poisson(payment_tasks, probing_task, num_threads=
     # Calculate statistics
     if results:
         avg_processing_time = sum(task.processing_time for task in results) / len(results)
+        successful_tasks = [task for task in results if task.success]
+        if successful_tasks:  # 檢查是否有成功交易，避免除以零
+            avg_processing_time = sum(task.processing_time for task in successful_tasks) / len(successful_tasks)
+        avg_completion_time = sum(task.processing_time for task in results) / len(results)
+        
         avg_completion_time = sum(task.completion_time for task in results) / len(results)
         print(f"Average processing time: {avg_processing_time:.8f} seconds")
         print(f"Average completion time: {avg_completion_time:.2f} seconds")
@@ -1525,6 +1612,7 @@ def main():
                 'usage': 0,
                 'last_used': None,  # Initialize to None
                 'usage_frequency': 0,  # Initialize to 0
+                'reserved_capacity': 0  # Initialize reserved capacity
             }
             G.add_edge(u, v, **attrs)
 
