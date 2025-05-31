@@ -10,7 +10,8 @@ import matplotlib.pyplot as plt
 # cheap
 # 'param1': 1.0611725984543918, 'param2': 60.27367308783179, 'param3': 7.360643237372914, 'param4': 0.3626886219630006, 'param5': 2} 
 # 'param1': 3.5058356214988553, 'param2': 63.894639286155495, 'param3': 7.130481644623853, 'param4': 0.48043474123701574, 'param5': 0.2393143708198513, 'param6': 4
-def run_simulation(num_payments, payments_per_sec, execute_probing, param1=3.5058356214988553, param2=63.894639286155495, param3=7.130481644623853, param4=0.48043474123701574, param5=0.2393143708198513, param6=4): 
+# params = [8.77573878, 45.68933345, 5.05366829, 0.17184994, 0.46748966, 5.]
+def run_simulation(num_payments, payments_per_sec, execute_probing, param1=8.77573878, param2=45.68933345, param3=5.05366829, param4=0.17184994, param5=0.46748966, param6=5):
     """
     Run the simulator_thread.py script directly by calling its main function.
 
@@ -76,7 +77,7 @@ def test_simulation():
     Test the simulator_thread.py script with different payment counts and probing settings.
     """
     payment_counts = range(1000, 5100, 1000)  # From 1000 to 9000 payments, step 1000
-    TPS1 = range(30, 60, 10)  # From 1 to 100 TPS, step 10
+    TPS1 = range(10, 60, 10)  # From 1 to 100 TPS, step 10
     success_rates_probing_0 = []
     success_rates_probing_1 = []
     success_rates_probing_2 = []
@@ -108,12 +109,12 @@ def test_simulation():
     print("\nRunning simulations with execute_probing = 1...")
     for tps in TPS1:
         print("2")
-        success_rate, execution_time, avg_fee = run_simulation(1000, tps, 3)
+        success_rate, execution_time, avg_fee = run_simulation(10000, tps, 3)
         if success_rate is not None:
             success_rates_probing_1.append(success_rate)
             exe_time_probing_1.append(execution_time)
             avg_fee_1.append(avg_fee)
-            print(f"Payments: {tps}, Success Rate (Probing=1): {success_rate:.2f}%, Execution Time: {execution_time:.8f}s, print Avg Fee: {avg_fee:.2f} satoshis")
+            print(f"Payments: {tps}, Success Rate (Probing=1): {success_rate:.2f}%, Execution Time: {execution_time:.8f}s, print Avg Fee: {avg_fee:.8f} satoshis")
         else:
             success_rates_probing_1.append(0)  # Default to 0 if simulation fails
             exe_time_probing_1.append(0)
@@ -124,12 +125,12 @@ def test_simulation():
     print("\nRunning simulations with execute_probing = 3...")
     for tps in TPS1:
         print("3")
-        success_rate, execution_time, avg_fee = run_simulation(1000, tps, 4)
+        success_rate, execution_time, avg_fee = run_simulation(10000, tps, 4)
         if success_rate is not None:
             success_rates_probing_2.append(success_rate)
             exe_time_probing_2.append(execution_time)
             avg_fee_2.append(avg_fee)
-            print(f"TPS: {tps}, Success Rate (DReP): {success_rate:.2f}%, Execution Time: {execution_time:.8f}s, avg_fee: {avg_fee:.2f} satoshis")
+            print(f"TPS: {tps}, Success Rate (DReP): {success_rate:.2f}%, Execution Time: {execution_time:.8f}s, avg_fee: {avg_fee:.8f} satoshis")
         else:
             success_rates_probing_2.append(0)  # Default to 0 if simulation fails
             exe_time_probing_2.append(0)
@@ -151,9 +152,9 @@ def test_simulation():
     '''
     # Plot the results
     plt.figure(figsize=(10, 6))
-    plt.plot(TPS1, success_rates_probing_0, label="Deter Pay", marker="o")
-    plt.plot(TPS1, success_rates_probing_1, label="Paying via the Maximum Flow Path", marker="o")
-    plt.plot(TPS1, success_rates_probing_2, label="Shortest Path", marker="o")
+    # plt.plot(TPS1, success_rates_probing_0, label="Deter Pay", marker="o")
+    plt.plot(TPS1, success_rates_probing_1, label="Propoed Method", marker="o")
+    plt.plot(TPS1, success_rates_probing_2, label="Deter-pat", marker="o")
     plt.xlabel("Workload (TPS)")
     plt.ylabel("Success Rate (%)")
     plt.title("Success Rate vs Workload (TPS)")
@@ -165,13 +166,13 @@ def test_simulation():
     
     # Plot the results
     plt.figure(figsize=(10, 6))
-    plt.plot(TPS1, exe_time_probing_0, label="Deter Pay", marker="o")
-    plt.plot(TPS1, exe_time_probing_1, label="Paying via the Maximum Flow Path", marker="o")
-    plt.plot(TPS1, exe_time_probing_2, label="Shortest Path", marker="o")
+ #   plt.plot(TPS1, exe_time_probing_0, label="Deter Pay", marker="o")
+    plt.plot(TPS1, exe_time_probing_1, label="Propoed Method", marker="o")
+    plt.plot(TPS1, exe_time_probing_2, label="Deter-pay", marker="o")
     plt.xlabel("Workload (TPS)")
     plt.ylabel("Execution Time (s) / Payment")
     plt.title("Execution Time vs Workload (TPS)")
-    plt.ylim(0, 2)  # Set y-axis range from 0 to 2 seconds
+    plt.ylim(0, 3)  # Set y-axis range from 0 to 2 seconds
     plt.legend()
     plt.grid(True)
     plt.tight_layout()
@@ -179,13 +180,13 @@ def test_simulation():
 
     # Plot the results
     plt.figure(figsize=(10, 6))
-    plt.plot(TPS1, avg_fee_0, label="Deter Pay", marker="o")
-    plt.plot(TPS1, avg_fee_1, label="Paying via the Maximum Flow Path", marker="o")
-    plt.plot(TPS1, avg_fee_2, label="Shortest Path", marker="o")
+  #  plt.plot(TPS1, avg_fee_0, label="Deter Pay", marker="o")
+    plt.plot(TPS1, avg_fee_1, label="Propoed Method", marker="o")
+    plt.plot(TPS1, avg_fee_2, label="Deter-pay", marker="o")
     plt.xlabel("Workload (TPS)")
     plt.ylabel("Average Fee (satoshis)")
     plt.title("Average Fee vs Workload (TPS)")
-    plt.ylim(0, 600)  # Set y-axis range from 0 to 600 satoshis
+    plt.ylim(0, 0.001)  # Set y-axis range from 0 to 600 satoshis
     plt.legend()
     plt.grid(True)
     plt.tight_layout()

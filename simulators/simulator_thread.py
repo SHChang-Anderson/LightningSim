@@ -17,8 +17,9 @@ import shutil
 
 # 'param1': 1.0611725984543918, 'param2': 60.27367308783179, 'param3': 7.360643237372914, 'param4': 0.3626886219630006, 'param5': 2} 
 
-'''
+
 import sys
+'''
 sys.argv = [
     "simulator_thread.py",  # Script name
     str(4),   # Probing mode
@@ -35,6 +36,10 @@ sys.argv = [
 np.random.seed(42)
 
 G = nx.DiGraph()
+
+delay_time = 0 # Default delay time for payments
+
+simulate_time = 30
 
 log_table = {}  # Global variable used to store the log table
 log_table_locks = {}  # Used to store the locks for each [sender][receiver]
@@ -631,7 +636,7 @@ def probing_worker(stop_event, simulation_start_time):
                 global G
                 # Update channel capacities
                 for i in range(len(probing_task.path) - 1):
-                    time.sleep(0.06)
+                    time.sleep(delay_time * 2)
                     u, v = probing_task.path[i], probing_task.path[i + 1]
                     probing_task.amount = min(probing_task.amount, G[u][v]['capacity'])
                 
@@ -682,7 +687,7 @@ def probing_worker_ps(stop_event, simulation_start_time):
                 global G, probing_results, probing_results_lock
                 # Update channel capacities
                 for i in range(len(probing_task.path) - 1):
-                    time.sleep(0.06)
+                    time.sleep(delay_time * 2)
                     u, v = probing_task.path[i], probing_task.path[i + 1]
                     probing_task.amount = min(probing_task.amount, G[u][v]['capacity'])
 
@@ -818,7 +823,7 @@ def payment_worker(task_queue, result_queue, lock_manager, stop_event, simulatio
                             is_valid_path = False
                         else:
                             for i in range(len(path) - 1):
-                                time.sleep(0.03)
+                                time.sleep(delay_time)
                                 u, v = path[i], path[i+1]
                                 try:
                                     capacity = G[u][v]['capacity'] - G[u][v].get('reserved_capacity', 0)
@@ -832,7 +837,7 @@ def payment_worker(task_queue, result_queue, lock_manager, stop_event, simulatio
                                     break
                         
                         if not is_valid_path or current_path_min_capacity == float('inf'): 
-                            print(f"Invalid path {path} for payment {payment_task.payment_id}. Skipping reservation.")
+                            # print(f"Invalid path {path} for payment {payment_task.payment_id}. Skipping reservation.")
                             continue
 
                         amount_to_reserve = min(current_path_min_capacity, remain_amount)
@@ -888,7 +893,7 @@ def payment_worker(task_queue, result_queue, lock_manager, stop_event, simulatio
                     if split == 0:
                         for i in range(len(payment_task.path) - 1):
 
-                            time.sleep(0.03)
+                            time.sleep(delay_time)
                             u, v = payment_task.path[i], payment_task.path[i + 1]
                             
                             lock_manager.acquire_channel_lock((u, v))
@@ -996,7 +1001,7 @@ def payment_worker(task_queue, result_queue, lock_manager, stop_event, simulatio
                                     path_fee_contribution = 0.0
                                     success = True
                                     for i in range(len(path_tuple) - 1):
-                                        time.sleep(0.03)  # Simulate some delay for channel lock acquisition
+                                        time.sleep(delay_time)  # Simulate some delay for channel lock acquisition
                                         u, v = path_tuple[i], path_tuple[i+1]
                                         lock_manager.acquire_channel_lock((u, v))
                                         try:
@@ -1010,19 +1015,8 @@ def payment_worker(task_queue, result_queue, lock_manager, stop_event, simulatio
                                             G[u][v]['capacity'] -= amount_to_deduct
                                             if (v, u) in G[v]:
                                                 G[v][u]['capacity'] += amount_to_deduct
-                                            all_deducted_channels_for_task.append((u, v, amount_to_deduct))
-
-                                            now = time.time()
-                                            if G[u][v]['last_used'] is not None:
-                                                time_diff = now - G[u][v]['last_used']
-                                                if time_diff > 0:
-                                                    previous_frequency = G[u][v].get('usage_frequency', 0)
-                                                    current_frequency = 1 / time_diff
-                                                    G[u][v]['usage_frequency'] = alpha * current_frequency + (1 - alpha) * previous_frequency
-                                            else:
-                                                G[u][v]['usage_frequency'] = 1
-                                            G[u][v]['last_used'] = now
                                             path_fee_contribution += (G[u][v]['fee'] + G[u][v]['rate'] * amount_to_deduct)
+                                            all_deducted_channels_for_task.append((u, v, amount_to_deduct))
 
                                         finally:
                                             lock_manager.release_channel_lock((u, v))
@@ -1115,7 +1109,7 @@ def payment_worker(task_queue, result_queue, lock_manager, stop_event, simulatio
                         remain_amount = payment_task.amount
                         rollback_channels_all = [[] for _ in range(len(split_cont))]  # initialize rollback channels for each path
                         while True:
-                            time.sleep(0.03)
+                            time.sleep(delay_time)
                             # Iterate through the paths chosen for the initial split attempt
                             # Original 'split_cont' holds indices relative to 'candidate_paths'
                             # Original 'payment_split_amount' was a list, now using payment_split_amount_dict
@@ -1239,7 +1233,7 @@ def payment_worker(task_queue, result_queue, lock_manager, stop_event, simulatio
                                 has_capacity_fb = True
                                 total_fee_fb = 0
                                 while True:
-                                    time.sleep(0.03)
+                                    time.sleep(delay_time)
                                     active_fallback_paths = list(split_cont_fb)
                                     for idx_fb in active_fallback_paths:
                                         path_fb, amount_fb = chosen_fallback_paths[idx_fb]
@@ -1292,8 +1286,6 @@ def payment_worker(task_queue, result_queue, lock_manager, stop_event, simulatio
                                     payment_task.message = "No probed paths available for fallback or probing failed."
                                 else:
                                     payment_task.message = "Fallback paths not chosen (e.g. amounts too small after split_rate) or no remaining amount."
-                            # ...existing code...
-                        # --- END OF PART B (Fallback logic for execute_probing == 3 if initial split fails) ---
                            
                 finally:
                     # Part c: Consolidate Final Rollback
@@ -1302,7 +1294,7 @@ def payment_worker(task_queue, result_queue, lock_manager, stop_event, simulatio
                         for r_u, r_v, r_amount in reversed(all_deducted_channels_for_task):
                             try:
                                 lock_manager.acquire_channel_lock((r_u, r_v))
-                                time.sleep(0.03) 
+                                time.sleep(delay_time) 
                                 G[r_u][r_v]['capacity'] += r_amount
                                 G[r_v][r_u]['capacity'] -= r_amount
                             finally:
@@ -1344,7 +1336,7 @@ def payment_worker(task_queue, result_queue, lock_manager, stop_event, simulatio
 
 
 # Simulate threaded payments with Poisson arrival
-def simulate_threaded_payments_poisson(payment_tasks, probing_task, num_threads=20, simulation_duration=30):
+def simulate_threaded_payments_poisson(payment_tasks, probing_task, num_threads=20, simulation_duration=simulate_time):
     """
     Simulate parallel payments in the Lightning Network using multiple threads.
     Payments arrive according to a Poisson process.
@@ -1417,14 +1409,15 @@ def simulate_threaded_payments_poisson(payment_tasks, probing_task, num_threads=
 
     # Count successful payments
     successful_payments = sum(1 for task in results if task.success)
+    successful_payments_amount = sum(task.amount for task in results if task.success)
     total_payments = len(results)
-    avg_fee = sum(task.fee for task in results) / successful_payments if total_payments > 0 else 0
+    avg_fee = sum(task.fee for task in results) / successful_payments_amount if total_payments > 0 else 0
 
     # Calculate statistics
     if results:
         avg_processing_time = sum(task.processing_time for task in results) / len(results)
         successful_tasks = [task for task in results if task.success]
-        if successful_tasks:  # 檢查是否有成功交易，避免除以零
+        if successful_tasks: 
             avg_processing_time = sum(task.processing_time for task in successful_tasks) / len(successful_tasks)
         avg_completion_time = sum(task.processing_time for task in results) / len(results)
         
@@ -1667,7 +1660,7 @@ def main():
     success_rate = (successful_payments / total_payments) * 100
     print(f"\nSuccess Rate: {success_rate:.2f}%")
     print(f"Successful Payments: {successful_payments}/{total_payments}")
-    print(f"Average Fee: {avg_fee:.6f} satoshis")
+    print(f"Average Fee: {avg_fee:.20f} satoshis")
     print(f"Execution Time: {avg_processing_time:.8f} seconds")
 
     # Close the log file
