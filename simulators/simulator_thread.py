@@ -12,6 +12,7 @@ import queue
 import sys
 import uuid
 import shutil
+from scipy.optimize import linprog  
 # {'param1': 96.09985339519194, 'param2': 2.10183642984912, 'param3': 0.8338142960594785, 'param4': 0.19995197310808, 'param5': 9}
 
 
@@ -19,27 +20,31 @@ import shutil
 
 
 import sys
+
 '''
 sys.argv = [
     "simulator_thread.py",  # Script name
     str(4),   # Probing mode
     str(1000),      # Number of payments
     str(50),  # Payments per second
-    str(1.0611725984543918), # Parameter 1
-    str(60.27367308783179), # Parameter 2
-    str(7.360643237372914), # Parameter 3
-    str(0.3626886219630006), # Parameter 4
-    str(0.2393143708198513), # Parameter 4
-    str(2) # Parameter 5
+    str(8.41357603), # Parameter 1
+    str(88.7934811), # Parameter 2
+    str(9.06700704), # Parameter 3
+    str(0.0158584490), # Parameter 4
+    str(0.297768756), # Parameter 4
+    str(5) # Parameter 5
 ]
 '''
+
 np.random.seed(42)
 
 G = nx.DiGraph()
 
-delay_time = 0 # Default delay time for payments
+delay_time = 0.03 # Default delay time for payments
 
 simulate_time = 30
+
+ELEPHANT_THRESHOLD = 1116889  
 
 log_table = {}  # Global variable used to store the log table
 log_table_locks = {}  # Used to store the locks for each [sender][receiver]
@@ -316,6 +321,53 @@ def read_paths_from_log(log_file, destination):
                 print(f"Failed to parse line: {line}. Reason: {e}")
 
     return paths
+
+def optimize_path_selection(paths, demand, G):
+    """ Optimize path selection based on the given paths and demand."""
+    if not paths:
+        return None
+        
+    num_paths = len(paths)
+    c = []  # target coefficients for the linear programming problem
+    
+    # minimum cost for each path
+    for path_data in paths:
+        path = tuple(path_data[0])  # list to tuple for immutability
+        path_fee = 0
+        try:
+            for i in range(len(path)-1):
+                u, v = path[i], path[i+1]
+                path_fee += G[u][v]['fee'] + G[u][v]['rate'] * demand
+            c.append(path_fee)
+        except Exception as e:
+            print(f"Error calculating path fee: {e}")
+            return None
+    
+    # constraints for the linear programming problem
+    A_eq = [[1] * num_paths]
+    b_eq = [demand]
+    
+    # constraints for the capacities of each path
+    bounds = []
+    for path_data in paths:
+        path = tuple(path_data[0])  # list to tuple for immutability
+        min_capacity = float('inf')
+        try:
+            for i in range(len(path)-1):
+                u, v = path[i], path[i+1]
+                min_capacity = min(min_capacity, G[u][v]['capacity'])
+            bounds.append((0, min_capacity))
+        except Exception as e:
+            print(f"Error calculating path capacity: {e}")
+            return None
+    
+    try:
+        # linear programming to minimize the cost
+        result = linprog(c, A_eq=A_eq, b_eq=b_eq, bounds=bounds)
+        return result.x if result.success else None
+    except Exception as e:
+        print(f"Error solving linear programming: {e}")
+        return None
 
 def get_paths_from_routing_table(filename, source, destination):
     """
@@ -741,7 +793,7 @@ def payment_worker(task_queue, result_queue, lock_manager, stop_event, simulatio
 
                 # Check if argv is provided and set the flag
                 execute_probing = int(sys.argv[1]) if len(sys.argv) > 1 else 0  # default to 0
-
+                all_deducted_channels_for_task = [] 
                 if execute_probing == 1:
                     
                     log_paths = get_paths_from_log_table(payment_task.sender, payment_task.receiver)
@@ -873,6 +925,194 @@ def payment_worker(task_queue, result_queue, lock_manager, stop_event, simulatio
                         payment_task.fee = 0
 
                     split = 2
+                elif execute_probing == 5: # Flash Payment
+                    # Elephant Payments
+                    is_elephant = payment_task.amount > ELEPHANT_THRESHOLD  
+                    
+                    if is_elephant:
+                        # elephant payment logic (Flash Payments)
+                        paths = get_paths_from_routing_table(
+                            f"../routing_table/node{payment_task.sender}",
+                            payment_task.sender, 
+                            payment_task.receiver
+                        )
+                        
+                        if paths:
+                            # best path selection using linear programming
+                            path_flows = optimize_path_selection(paths, 
+                                                            payment_task.amount,
+                                                            G)
+                            if path_flows is not None:
+                                # linear programming results
+                                split_cont = []  # saving indices of paths with positive flow
+                                payment_split_amount_dict = {}  # storing the amount to be split across paths
+                                
+                                for idx, amount in enumerate(path_flows):
+                                    if amount > 0:
+                                        split_cont.append(idx)
+                                        payment_split_amount_dict[idx] = amount
+                                
+                                if split_cont:  
+                                    split = 3  # Flash Payment
+                                    
+                                    total_fee = 0
+                                    has_capacity = True
+                                    pos = 0  # track the position in the path
+                                    all_deducted_channels_for_task = []  # record all deducted channels for this task
+                                    
+                                    # Excute the payment across multiple paths
+                                    while True:
+                                        time.sleep(delay_time)
+                                        active_paths = list(split_cont)
+                                        
+                                        for path_idx in active_paths:
+                                            # insure the path index is valid
+                                            if path_idx >= len(paths):
+                                                continue
+                                            
+                                            path = paths[path_idx][0]  
+                                            
+                                            if pos >= len(path) - 1:
+                                                if path_idx in split_cont:
+                                                    split_cont.remove(path_idx)
+                                                continue
+                                            
+                                            u, v = path[pos], path[pos + 1]
+                                            amount_to_deduct = payment_split_amount_dict[path_idx]
+                                            
+                                            lock_manager.acquire_channel_lock((u, v))
+                                            try:
+                                                if G[u][v]['capacity'] < amount_to_deduct:
+                                                    has_capacity = False
+                                                    payment_task.message = f"Channel {u}-{v} insufficient: {G[u][v]['capacity']} < {amount_to_deduct}"
+                                                    if path_idx in split_cont:
+                                                        split_cont.remove(path_idx)
+                                                    break
+                                                
+                                                G[u][v]['capacity'] -= amount_to_deduct
+                                                G[v][u]['capacity'] += amount_to_deduct
+                                                all_deducted_channels_for_task.append((u, v, amount_to_deduct))
+                                                
+                                                total_fee += (G[u][v]['fee'] + G[u][v]['rate'] * amount_to_deduct)
+                                                
+                                            finally:
+                                                lock_manager.release_channel_lock((u, v))
+                                        
+                                        if not has_capacity:
+                                            break
+                                        
+                                        if not split_cont: 
+                                            break
+                                            
+                                        pos += 1
+                                    
+                                    if has_capacity:
+                                        payment_task.success = True
+                                        payment_task.fee = total_fee
+                                        payment_task.message = "Payment successful via multiple paths"
+                                    else:
+                                        payment_task.success = False
+                                        payment_task.message = "Payment failed: insufficient capacity on one or more paths"
+                                else:
+                                    payment_task.success = False
+                                    payment_task.message = "No viable paths found from linear programming results"
+                            else:
+                                payment_task.success = False
+                                payment_task.message = "Linear programming optimization failed"
+                        else:
+                            payment_task.success = False
+                            payment_task.message = "No viable paths found"
+
+                    else:
+                        m = 4 
+                        remain_amount = payment_task.amount
+                        payment_task.success = False
+                        
+                        candidate_paths = get_paths_from_routing_table(
+                            f"../routing_table/node{payment_task.sender}",
+                            payment_task.sender, 
+                            payment_task.receiver
+                        )
+                        
+                        if candidate_paths:
+
+                            random.shuffle(candidate_paths)
+                            total_fee = 0
+                            
+                            for path, flow, base_fee, fee_rate in candidate_paths[:m]:
+                                if remain_amount <= 0:
+                                    break
+                                    
+                                has_capacity = True
+                                path_fee = 0
+                                current_path_deductions = [] 
+                                
+                                min_capacity = float('inf')
+                                for i in range(len(path)-1):
+                                    time.sleep(delay_time * 2)
+                                    u, v = path[i], path[i+1]
+                                    lock_manager.acquire_channel_lock((u, v))
+                                    try:
+                                        capacity = G[u][v]['capacity']
+                                        min_capacity = min(min_capacity, capacity)
+                                        if capacity < remain_amount:
+                                            has_capacity = False
+                                            break
+                                    finally:
+                                        lock_manager.release_channel_lock((u, v))
+                                
+                                amount_to_send = min(remain_amount, min_capacity)
+                                if amount_to_send > 0:
+
+                                    success = True
+                                    for i in range(len(path)-1):
+                                        time.sleep(delay_time)
+                                        u, v = path[i], path[i+1]
+                                        lock_manager.acquire_channel_lock((u, v))
+                                        try:
+                                            if G[u][v]['capacity'] < amount_to_send:
+                                                success = False
+                                                break
+                                            
+                                            G[u][v]['capacity'] -= amount_to_send
+                                            if (v, u) in G[v]:
+                                                G[v][u]['capacity'] += amount_to_send
+                                            
+                                            current_path_deductions.append((u, v, amount_to_send))
+                                            all_deducted_channels_for_task.append((u, v, amount_to_send))
+                                            
+                                            path_fee += (G[u][v]['fee'] + G[u][v]['rate'] * amount_to_send)
+                                            
+                                            
+                                        finally:
+                                            lock_manager.release_channel_lock((u, v))
+                                    
+                                    if success:
+
+                                        remain_amount -= amount_to_send
+                                        total_fee += path_fee
+                                    else:
+
+                                        for u, v, amount in reversed(current_path_deductions):
+                                            time.sleep(delay_time)
+                                            lock_manager.acquire_channel_lock((u, v))
+                                            try:
+                                                G[u][v]['capacity'] += amount
+                                                if (v, u) in G[v]:
+                                                    G[v][u]['capacity'] -= amount
+                                            finally:
+                                                lock_manager.release_channel_lock((u, v))
+                            
+                            if remain_amount <= 0:
+                                payment_task.success = True
+                                payment_task.fee = total_fee
+                                payment_task.message = "Payment successful through multiple paths"
+                            else:
+                                payment_task.success = False
+                                payment_task.message = f"Payment partially failed. Remaining amount: {remain_amount}"
+                        else:
+                            payment_task.success = False
+                            payment_task.message = "No paths available in routing table"
                         
 
 
@@ -884,7 +1124,6 @@ def payment_worker(task_queue, result_queue, lock_manager, stop_event, simulatio
                 # made during the processing of this payment_task. Its purpose is to ensure that if the
                 # payment_task ultimately fails (payment_task.success == False), all these changes can be
                 # reverted in the main 'finally' block, thus ensuring atomicity for the payment attempt.
-                all_deducted_channels_for_task = [] 
                 # rollback_channels = [] # REMOVED: Replaced by all_deducted_channels_for_task
 
                 try:
@@ -1039,7 +1278,8 @@ def payment_worker(task_queue, result_queue, lock_manager, stop_event, simulatio
                                 payment_task.message = f"Payment failed. Collected: {total_successfully_deducted_amount} of {payment_task.amount}"
                                 payment_task.fee = 0
 
-
+                    elif split == 3: # This is the multi-path payment case:
+                        pass
                     else: # This is the (split == 1) case for execute_probing == 3
                         split_cont = [0, 1]
                         payment_split_amount = [] # Stores amounts for paths in split_cont
@@ -1094,8 +1334,9 @@ def payment_worker(task_queue, result_queue, lock_manager, stop_event, simulatio
                         # Sort paths by fee (cheapest first)
                         paths_with_fees.sort(key=lambda x: x[2])
 
-                        # Select the top 5 cheapest paths
-                        top_cheapest_paths = paths_with_fees[:5]
+                        # Select the top 10 cheapest paths or all available paths if less than 10
+                        num_paths_to_select = min(15, len(paths_with_fees))
+                        top_cheapest_paths = paths_with_fees[:num_paths_to_select]
 
                         task_ids = []
                         # Create probing tasks for the top 5 cheapest paths
@@ -1410,6 +1651,7 @@ def simulate_threaded_payments_poisson(payment_tasks, probing_task, num_threads=
     # Count successful payments
     successful_payments = sum(1 for task in results if task.success)
     successful_payments_amount = sum(task.amount for task in results if task.success)
+    total_payments_amount = sum(task.amount for task in results)
     total_payments = len(results)
     avg_fee = sum(task.fee for task in results) / successful_payments_amount if total_payments > 0 else 0
 
@@ -1424,13 +1666,13 @@ def simulate_threaded_payments_poisson(payment_tasks, probing_task, num_threads=
         avg_completion_time = sum(task.completion_time for task in results) / len(results)
         print(f"Average processing time: {avg_processing_time:.8f} seconds")
         print(f"Average completion time: {avg_completion_time:.2f} seconds")
-
+    successful_volume_rate = successful_payments_amount / total_payments_amount if total_payments_amount > 0 else 0
     # Print payment results
     print(f"\nPayment results:")
     for task in sorted(results, key=lambda x: x.payment_id):
         print(task)
 
-    return successful_payments, total_payments, results, avg_fee, avg_processing_time
+    return successful_payments, total_payments, results, avg_fee, avg_processing_time, successful_volume_rate
 
 # Generate payment arrival times using Poisson process
 def generate_poisson_arrival_times(num_payments, rate):
@@ -1640,7 +1882,7 @@ def main():
     '''
     # Simulate threaded payments
     start_time = time.time()
-    successful_payments, total_payments, results, avg_fee, avg_processing_time = simulate_threaded_payments_poisson(
+    successful_payments, total_payments, results, avg_fee, avg_processing_time, successful_volume_rate = simulate_threaded_payments_poisson(
         payment_tasks, probing_task, num_threads=20
     )
     end_time = time.time()
@@ -1662,6 +1904,7 @@ def main():
     print(f"Successful Payments: {successful_payments}/{total_payments}")
     print(f"Average Fee: {avg_fee:.20f} satoshis")
     print(f"Execution Time: {avg_processing_time:.8f} seconds")
+    print(f"Successful Volume Rate: {successful_volume_rate:.2f}%")
 
     # Close the log file
     log_file.close()
