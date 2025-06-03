@@ -19,20 +19,22 @@ from scipy.optimize import linprog
 # 'param1': 1.0611725984543918, 'param2': 60.27367308783179, 'param3': 7.360643237372914, 'param4': 0.3626886219630006, 'param5': 2} 
 
 
+#  2.74567936 47.62460495  9.84051573  0.34846964  0.41626772  3.       
 import sys
+
 
 '''
 sys.argv = [
     "simulator_thread.py",  # Script name
-    str(4),   # Probing mode
+    str(3),   # Probing mode
     str(1000),      # Number of payments
     str(50),  # Payments per second
-    str(8.41357603), # Parameter 1
-    str(88.7934811), # Parameter 2
-    str(9.06700704), # Parameter 3
-    str(0.0158584490), # Parameter 4
-    str(0.297768756), # Parameter 4
-    str(5) # Parameter 5
+    str(2.74567936), # Parameter 1
+    str(47.62460495), # Parameter 2
+    str(9.84051573), # Parameter 3
+    str(0.34846964), # Parameter 4
+    str(0.41626772), # Parameter 4
+    str(3) # Parameter 5
 ]
 '''
 
@@ -40,9 +42,9 @@ np.random.seed(42)
 
 G = nx.DiGraph()
 
-delay_time = 0.03 # Default delay time for payments
+delay_time = 0.00 # Default delay time for payments
 
-simulate_time = 30
+simulate_time = 10
 
 ELEPHANT_THRESHOLD = 1116889  
 
@@ -497,11 +499,42 @@ class PaymentTask:
     
 # Probing task class
 class ProbeTask:
-    def __init__(self, path, arrival_time):
-        self.task_id = str(uuid.uuid4())  # generate a unique task ID
-        self.path = path
-        self.amount = sys.maxsize  # Amount to probe
+    def __init__(self, paths, arrival_time):
+        """
+        Initialize a ProbeTask that can handle multiple paths.
+        
+        Parameters:
+        - paths: List of paths to probe
+        - arrival_time: Time when the probing should start
+        """
+        self.task_id = str(uuid.uuid4())  # Single task ID for all paths
+        self.paths = paths  # List of paths to probe
+        self.amounts = {tuple(path): sys.maxsize for path in paths}  # Track amount for each path
         self.arrival_time = arrival_time  # For compatibility with PaymentTask
+        self.results = {}  # Store probing results for each path
+
+    def set_amount(self, path, amount):
+        """Set the probed amount for a specific path"""
+        path_tuple = tuple(path)
+        self.amounts[path_tuple] = amount
+        
+    def get_amount(self, path):
+        """Get the probed amount for a specific path"""
+        path_tuple = tuple(path)
+        return self.amounts.get(path_tuple, sys.maxsize)
+
+    def add_result(self, path, amount, timestamp):
+        """Add a probing result for a path"""
+        path_tuple = tuple(path)
+        self.results[path_tuple] = {
+            "path": path,
+            "amount": amount,
+            "timestamp": timestamp
+        }
+
+    def get_all_results(self):
+        """Get all probing results"""
+        return self.results
 
     def __lt__(self, other):
         return self.arrival_time < other.arrival_time
@@ -728,35 +761,62 @@ def wait_for_all_tasks(task_ids):
 
 def probing_worker_ps(stop_event, simulation_start_time):
     """
-    Worker function for probing the network.
+    Worker function for probing multiple paths simultaneously in the network.
     """
     while not stop_event.is_set():
         try:
-            # Get the next probing task from the queue
-            probing_task = probing_task_queue.get(block=True, timeout=1)
+            # Get the probing task (containing multiple paths) from the queue
+            probe_task = probing_task_queue.get(block=True, timeout=1)
 
             try:
                 global G, probing_results, probing_results_lock
-                # Update channel capacities
-                for i in range(len(probing_task.path) - 1):
+                
+                pos = 0  # Track position in all paths
+                active_paths = list(range(len(probe_task.paths)))  # Track active paths by index
+                paths_min_capacity = {i: float('inf') for i in active_paths}  # Track min capacity for each path
+                
+                while True:
                     time.sleep(delay_time * 2)
-                    u, v = probing_task.path[i], probing_task.path[i + 1]
-                    probing_task.amount = min(probing_task.amount, G[u][v]['capacity'])
+                    # Make a copy of active paths to avoid modification during iteration
+                    current_active_paths = list(active_paths)
 
-                # construct the probing result
-                result = {
-                    "task_id": probing_task.task_id,
-                    "path": probing_task.path,
-                    "amount": probing_task.amount,
-                    "timestamp": time.time() - simulation_start_time
-                }
+                    for path_idx in current_active_paths:
+                        path = probe_task.paths[path_idx]
+                        
+                        # Check if we've reached the end of this path
+                        if pos >= len(path) - 1:
+                            # Path completed, record result and remove from active paths
+                            active_paths.remove(path_idx)
+                            probe_task.add_result(
+                                path=path,
+                                amount=paths_min_capacity[path_idx],
+                                timestamp=time.time() - simulation_start_time
+                            )
+                            continue
 
-                # save the probing result to the global dictionary
+                        # Get current channel to probe
+                        u, v = path[pos], path[pos + 1]
+                        
+                        # Update minimum capacity for this path
+                        current_capacity = G[u][v]['capacity']
+                        paths_min_capacity[path_idx] = min(
+                            paths_min_capacity[path_idx], 
+                            current_capacity
+                        )
+                            
+                    
+                    # Break if no more active paths
+                    if not active_paths:
+                        break
+                        
+                    pos += 1
+
+                # Save all results at once
                 with probing_results_lock:
-                    probing_results[probing_task.task_id] = result
+                    probing_results[probe_task.task_id] = probe_task.get_all_results()
 
             except Exception as e:
-                print(f"Error probing path: {str(e)}")
+                print(f"Error probing paths: {str(e)}")
             
             finally:
                 # Mark the task as done
@@ -1280,44 +1340,58 @@ def payment_worker(task_queue, result_queue, lock_manager, stop_event, simulatio
 
                     elif split == 3: # This is the multi-path payment case:
                         pass
-                    else: # This is the (split == 1) case for execute_probing == 3
-                        split_cont = [0, 1]
-                        payment_split_amount = [] # Stores amounts for paths in split_cont
-                        min_succ_rate = float('inf')
-                        # rollback_channels_all_initial_split is REMOVED. Global rollback handles this.
 
-                        # This loop determines the payment_split_amount for the initial attempt paths in 'split_cont'
-                        payment_split_amount_dict = {} # Using a dictionary for clarity: path_index -> amount
-                        while True: 
+                    else:  # This is the (split == 1) case for execute_probing == 3
+                        split_cont = [0]  # Start with just the first path
+                        payment_split_amount_dict = {}  # Using a dictionary for clarity: path_index -> amount
+                        min_succ_rate = float('inf')
+
+                        while True:
+                            # check if we have enough paths to split
+                            if not candidate_paths or len(candidate_paths) <= split_cont[-1]:
+                                payment_task.success = False
+                                payment_task.message = "Not enough candidate paths available"
+                                break
+
+                            # compute the total flow for the paths we are considering
                             total_flow = sum(path[1] for path in candidate_paths[:split_cont[-1] + 1] if path[1] > 0)
                             if total_flow == 0:
-                                raise ValueError("Total flow is zero, cannot split payment.")
-                            
-                            for path_idx_in_candidate_paths in split_cont:
-                                # Calculate the split amount for each path
-                                # candidate_paths[path_idx_in_candidate_paths][1] is the flow of this path
-                                split_amount_for_path = payment_task.amount * (candidate_paths[path_idx_in_candidate_paths][1] / total_flow)
-                                payment_split_amount_dict[path_idx_in_candidate_paths] = split_amount_for_path
+                                payment_task.success = False
+                                payment_task.message = "Total flow is zero, cannot split payment"
+                                break
+
+                            # payment_split_amount_dict.clear()  # Clear previous amounts
+                            for path_idx in split_cont:
+                                if path_idx >= len(candidate_paths):
+                                    continue  # Skip invalid indices
                                 
-                                # Calculate the success rate (original logic)
+                                # Calculate the split amount for each path
+                                split_amount = payment_task.amount * (candidate_paths[path_idx][1] / total_flow)
+                                payment_split_amount_dict[path_idx] = split_amount
+                                
+                                # Calculate the success rate
                                 min_succ_rate = min(
-                                    min_succ_rate, # existing min_succ_rate
-                                    (candidate_paths[path_idx_in_candidate_paths][1] - split_amount_for_path) / candidate_paths[path_idx_in_candidate_paths][1]
+                                    min_succ_rate,
+                                    (candidate_paths[path_idx][1] - split_amount) / candidate_paths[path_idx][1]
                                 )
 
-                            if min_succ_rate < float(sys.argv[7]) and len(split_cont) < len(candidate_paths) and len(split_cont) < float(sys.argv[9]):
-                                payment_split_amount_dict.clear() # Clear amounts as we are re-calculating
+                            # check if we can proceed with the current split
+                            if (min_succ_rate < float(sys.argv[7]) and 
+                                len(split_cont) < len(candidate_paths) and 
+                                len(split_cont) < float(sys.argv[9])):
+                                
+                                payment_split_amount_dict.clear()
                                 min_succ_rate = float('inf')
-                                # Add the next path from candidate_paths to split_cont by its index
-                                if len(split_cont) < len(candidate_paths): # Ensure we don't go out of bounds
-                                     # The new path to add is the one at index len(split_cont) in candidate_paths
-                                    split_cont.append(len(split_cont)) # This logic seems to assume split_cont contains contiguous indices from 0.
-                                else: # Cannot add more paths
-                                    break 
+                                next_path_idx = len(split_cont)
+                                
+                                if next_path_idx < len(candidate_paths):
+                                    split_cont.append(next_path_idx)
+                                else:
+                                    break
                                 continue
                             else:
                                 break
-                        
+
 
                         # Calculate the total fee for each path
                         paths_with_fees = []
@@ -1326,7 +1400,7 @@ def payment_worker(task_queue, result_queue, lock_manager, stop_event, simulatio
                         start_index_for_probing = 0
                         if split_cont:
                             start_index_for_probing = split_cont[-1] + 1
-                        
+
                         for path_data_tuple in candidate_paths[start_index_for_probing:]:
                             # path_data_tuple is (path, flow, score, total_fee_for_path)
                             paths_with_fees.append((path_data_tuple[0], path_data_tuple[1], path_data_tuple[3]))
@@ -1338,12 +1412,14 @@ def payment_worker(task_queue, result_queue, lock_manager, stop_event, simulatio
                         num_paths_to_select = min(15, len(paths_with_fees))
                         top_cheapest_paths = paths_with_fees[:num_paths_to_select]
 
-                        task_ids = []
-                        # Create probing tasks for the top 5 cheapest paths
-                        for path, flow, total_fees in top_cheapest_paths:
-                            probing_task = ProbeTask(path, time.time() - simulation_start_time)
-                            task_ids.append(probing_task.task_id)
-                            probing_task_queue.put(probing_task)  
+                        # Create single probing task for all paths
+                        current_time = time.time() - simulation_start_time
+                        paths_to_probe = [path for path, flow, total_fees in top_cheapest_paths]
+                        probe_task = ProbeTask(paths_to_probe, current_time)
+                        task_id = probe_task.task_id  # use single task_id for all paths
+
+                        # Put the probing task into queue
+                        probing_task_queue.put(probe_task)
                         
                         pos = 0  
                         roll_back_pos = []
@@ -1436,6 +1512,11 @@ def payment_worker(task_queue, result_queue, lock_manager, stop_event, simulatio
 
                         # Fallback logic is only entered if has_capacity is False after the initial split attempt.
                         if not has_capacity:
+                            ''' # Without Fallback Logic
+                            payment_task.success = False
+                            payment_task.message = f"Payment failed."
+                            payment_task.fee = 0
+                            '''
                             split_rate = float(sys.argv[8]) if len(sys.argv) > 8 else 0.1 # Default split rate if not provided
                             payment_task.success = False # Explicitly ensure if not already.
                             # --- START OF PART B: Fallback Logic ---
@@ -1446,15 +1527,19 @@ def payment_worker(task_queue, result_queue, lock_manager, stop_event, simulatio
                             # The global `all_deducted_channels_for_task` will correctly roll back *all* deductions if the payment ultimately fails.
                             current_remain_amount_for_fallback = remain_amount 
 
-                            # Ensure task_ids for probing are available from the initial split attempt's probing phase
-                            # This assumes 'task_ids' from the 'else' block (line ~1030 in original) is in scope and contains relevant IDs.
-                            if 'task_ids' in locals() and task_ids: # Check if task_ids exists and is not empty
-                                wait_for_all_tasks(task_ids) 
-                                with probing_results_lock:
-                                    # Filter for task_ids that are actually in probing_results
-                                    probed_results_list = [probing_results[tid] for tid in task_ids if tid in probing_results]
+                            # Wait for probing results and process them
+                            if task_id:  
+                                wait_for_all_tasks([task_id]) 
+                                if task_id in probing_results:
+                                   
+                                    probe_results = probing_results[task_id]
+                                    
+                                    probed_results_list = []
+                                    for path_tuple, result in probe_results.items():
+                                        if result["amount"] > 0:  
+                                            probed_results_list.append(result)
                             else:
-                                probed_results_list = [] # No tasks to wait for or no results
+                                probed_results_list = [] 
 
                             for probed_path_data in probed_results_list: 
                                 if current_remain_amount_for_fallback <= 0:
@@ -1527,7 +1612,7 @@ def payment_worker(task_queue, result_queue, lock_manager, stop_event, simulatio
                                     payment_task.message = "No probed paths available for fallback or probing failed."
                                 else:
                                     payment_task.message = "Fallback paths not chosen (e.g. amounts too small after split_rate) or no remaining amount."
-                           
+
                 finally:
                     # Part c: Consolidate Final Rollback
                     if not payment_task.success:
@@ -1577,7 +1662,7 @@ def payment_worker(task_queue, result_queue, lock_manager, stop_event, simulatio
 
 
 # Simulate threaded payments with Poisson arrival
-def simulate_threaded_payments_poisson(payment_tasks, probing_task, num_threads=20, simulation_duration=simulate_time):
+def simulate_threaded_payments_poisson(payment_tasks, probing_task, num_threads=100, simulation_duration=simulate_time):
     """
     Simulate parallel payments in the Lightning Network using multiple threads.
     Payments arrive according to a Poisson process.
@@ -1613,7 +1698,7 @@ def simulate_threaded_payments_poisson(payment_tasks, probing_task, num_threads=
     # Add payment tasks to the task queue
     for task in payment_tasks:
         task_queue.put(task)
-
+    total_tasks = len(payment_tasks) 
     # Create and start probing worker threads
     threads1 = []
     for _ in range(num_threads):
@@ -1631,6 +1716,13 @@ def simulate_threaded_payments_poisson(payment_tasks, probing_task, num_threads=
 
     # wait for all tasks to be completed
     while time.time() < simulation_end_time:
+        # check if the stop event is set
+        current_completed = result_queue.qsize()
+        # if the stop event is set, break the loop
+        if current_completed >= total_tasks:
+            print("All tasks completed. Ending simulation.")
+            break
+
         time.sleep(1)  # check every second
 
     # Set the stop event

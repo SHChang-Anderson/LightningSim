@@ -93,7 +93,7 @@ base_fee = {}
 fee_rate = {}
 
 # Read lightning_network.txt
-with open("lightning_network.txt", "r") as file:
+with open("../scripts/lightning_network.txt", "r") as file:
     for line in file:
         if not line.strip():
             continue

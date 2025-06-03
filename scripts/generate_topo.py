@@ -1,6 +1,7 @@
 import networkx as nx
 import numpy as np
 import random
+import sys
 
 # Function to generate channel capacities based on a log-normal distribution
 def generate_channel_capacities(num_channels, mean_capacity, median_capacity):
@@ -78,10 +79,10 @@ def generate_lightning_network(num_nodes, m, mean_capacity, median_capacity, mea
     return directed_graph
 
 if __name__ == "__main__":
-    num_nodes = int(input("Set the number of nodes: "))
+    num_nodes = int(sys.argv[1]) if len(sys.argv) > 1 else 1000  # Default to 1000 nodes if not specified
     m = 5  # BA model parameter
-    mean_capacity = 64040688  # Mean channel capacity: 20 million satoshis
-    median_capacity = 900421  # Median channel capacity: 5 million satoshis
+    mean_capacity = 64040688 * float(sys.argv[2])  # Mean channel capacity: 20 million satoshis
+    median_capacity = 900421 * float(sys.argv[2])  # Median channel capacity: 5 million satoshis
     mean_fee = 1.0  # Mean base fee (satoshis)
     mean_rate = 0.00022  # Mean fee rate (percentage)
 
@@ -89,4 +90,4 @@ if __name__ == "__main__":
     G = generate_lightning_network(num_nodes, m, mean_capacity, median_capacity, mean_fee, mean_rate)
 
     # Save the network to a file
-    nx.write_edgelist(G, "lightning_network.txt", data=True)
+    nx.write_edgelist(G, "../scripts/lightning_network.txt", data=True)
